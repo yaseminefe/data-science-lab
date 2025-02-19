@@ -8,22 +8,43 @@ date: "2025-02-13"
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+## Cleaning the Data
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+```{r}
+library(readr)
+all_car_adverts <- read_csv("all_car_adverts 2.csv", 
+col_types = cols(car_price = col_number(), 
+car_seller_rating = col_number(), miles = col_number()))
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r message=FALSE, warning=FALSE}
+library(dplyr)
+all_car_adverts <- all_car_adverts %>% select(-c(car_badges, car_specs, car_attention_grabber,car_sub_title, car_seller, car_seller_location,...1))
+all_car_adverts <- na.omit(all_car_adverts)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r message=FALSE, warning=FALSE}
+# Convert PS to BHP where needed (only modify engine_size when the unit is "ps")
+all_car_adverts$engine_size <- ifelse(
+  all_car_adverts$engine_size_unit == "ps", 
+  all_car_adverts$engine_size * 0.98632,  # Convert only PS values
+  all_car_adverts$engine_size  # Keep BHP values unchanged
+)
+
+# Change all units to "bhp" after conversion
+all_car_adverts$engine_size_unit[all_car_adverts$engine_size_unit == "ps"] <- "bhp"
+all_car_adverts$reg <- gsub(" reg", "", all_car_adverts$reg)
+
+```
+
+## Descriptive Analysis
+
+## Linear Model
+
+## Non Linear Model
+
+
+
+
