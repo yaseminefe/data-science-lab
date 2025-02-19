@@ -1,0 +1,73 @@
+
+```{r}
+library(shiny)
+library(dplyr)
+library(DT)
+library(ggplot2)
+```
+
+# Load Data
+```{r}
+df <- read.csv("all_car_adverts.csv")
+```
+
+# Clean Data
+```{r}
+df_cleaned <- df %>%
+  mutate(year = as.numeric(as.character(year))) %>%
+  filter(!is.na(year))
+```
+
+# Define UI
+```{r}
+ui <- fluidPage(
+  titlePanel("Car Adverts Data Explorer"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("brand", "Select a Car Brand:", choices = unique(df$make), selected = unique(df$make)[1])
+    ),
+    
+    mainPanel(
+      h3("Top 10 Most Common Car Brands"),
+      tableOutput("top10_table"),
+      
+      h3("Filtered Data by Brand"),
+      DTOutput("filtered_data"),
+      
+      h3("Car Year Distribution"),
+      plotOutput("year_plot")
+    )
+  )
+)
+```
+
+# Define Server Logic
+```{r}
+server <- function(input, output) {
+  output$top10_table <- renderTable({
+    freq_table <- sort(table(df$make), decreasing = TRUE)
+    head(freq_table, 10)
+  })
+  
+  output$filtered_data <- renderDT({
+    df_cleaned %>% filter(make == input$brand)
+  })
+  
+  output$year_plot <- renderPlot({
+    ggplot(df_cleaned, aes(x = year)) + 
+      geom_histogram(binwidth = 1, fill = "blue", color = "white") +
+      theme_minimal() +
+      labs(title = "Distribution of Car Manufacturing Years", x = "Year", y = "Count")
+  })
+}
+
+```
+
+# Run App
+```{r}
+shinyApp(ui = ui, server = server)
+```
+
+
+
