@@ -1,0 +1,802 @@
+---
+title: "newdraft"
+output: html_document
+date: "2025-02-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readr)        # For reading CSV files
+library(dplyr)        # Data manipulation
+library(tidyr)        # Data tidying and handling missing values
+library(tidyverse)    # Collection of R packages including ggplot2, dplyr, tidyr
+library(caret)        # For data partitioning and machine learning models
+library(glmnet)       # Regularization methods (Ridge, Lasso)
+library(ISLR)         # Contains datasets and modeling functions
+library(ggplot2)      # For data visualization (optional but useful)
+library(stringr)      # For string manipulation (gsub alternatives)
+library(forcats)      # For working with categorical variables (factors)
+library(purrr)    
+library(randomForest) # Functional programming tools (used in lapply-like functions)
+library(xgboost)
+library(nnet)
+library(fastDummies)
+library(e1071)
+library(FNN) 
+```
+
+
+## Cleaning the Data
+
+```{r message=FALSE, warning=FALSE}
+
+all_car_adverts <- read_csv("all_car_adverts.csv", 
+col_types = cols(car_price = col_number(), 
+car_seller_rating = col_number(), miles = col_number(), year= col_number()))
+
+# Convert PS to BHP where needed (only modify engine_size when the unit is "ps")
+all_car_adverts$engine_size <- ifelse(
+  all_car_adverts$engine_size_unit == "ps", 
+  all_car_adverts$engine_size * 0.98632,  # Convert only PS values
+  all_car_adverts$engine_size  # Keep BHP values unchanged
+)
+all_car_adverts$engine_size_unit[all_car_adverts$engine_size_unit == "ps"] <- "bhp"
+all_car_adverts$reg <- gsub(" reg", "", all_car_adverts$reg)
+
+all_car_adverts <- all_car_adverts %>%
+  mutate(luxury_level = case_when(
+    # Super Luxury (5)
+    make %in% c("Aston Martin", "Bentley", "Ferrari", "Lamborghini", "Maserati", "McLaren", "Rolls-Royce") ~ 5,
+    
+    # Luxury (4)
+    make %in% c("Alfa Romeo", "Audi", "BMW", "Cadillac", "Jaguar", "Land Rover", "Lexus", "Mercedes-Benz", "Porsche", "Volvo") ~ 4,
+    
+    # Upper Mid-range (3)
+    make %in% c("Abarth", "Chrysler", "Cupra", "Dodge", "DS AUTOMOBILES", "Infiniti", "Lotus", "MINI", "Morgan", "Peugeot", "Volkswagen") ~ 3,
+    
+    # Mid-range (2)
+    make %in% c("Chevrolet", "Citroen", "Fiat", "Ford", "Honda", "Hummer", "Hyundai", "Jeep", "Kia", "Mazda", "Nissan", "Renault", "SEAT", "SKODA", "Subaru", "Toyota", "Vauxhall") ~ 2,
+    
+    # Economic (1)
+    make %in% c("Aixam", "Austin", "Caterham", "Dacia", "Daewoo", "Daihatsu", "Daimler", "Isuzu", "Lancia", "London Taxis International", "MG", "Mitsubishi", "Perodua", "Proton", "Rover", "Saab", "Smart", "Ssangyong", "Suzuki", "TVR") ~ 1
+  ))
+
+
+
+all_car_adverts <- all_car_adverts %>% select(-c(car_badges, car_specs, brand_new, discounted, car_attention_grabber,car_sub_title, car_seller, car_seller_location,...1, engine_size_unit, car_title, reg))
+all_car_adverts <- na.omit(all_car_adverts)
+all_car_adverts <- all_car_adverts %>%
+  rename(fuel_type = feul_type)
+
+########full_service, full_dealership part_service, part_warranty, first_year_road_tax, first_year_road_tax and ulez I included. Ulez is ultra low emissions zone, and electric cars comply, but not all petrol cars. Might be worth keeping this one. But of course you can always delete these columns again for your analysis! But for the first data partition I wanted to include them so that I can use them for my models as well. ############
+
+### I also threw out reg as we never use it
+
+
+# Convert categorical variables to factors
+factor_cols <- names(Filter(is.character, all_car_adverts))
+all_car_adverts[factor_cols] <- lapply(all_car_adverts[factor_cols], as.factor)
+
+# Handle zero values in `car_price` to prevent log(0) issues
+all_car_adverts <- all_car_adverts %>% filter(car_price > 0)
+
+# Apply log transformation to car_price
+all_car_adverts <- all_car_adverts %>% mutate(log_price = log(car_price))
+```
+
+## Classification using AI:
+# Prompt:
+Classify the following car brands into five luxury levels from 1 (Economic) to 5 (Super Luxury).
+
+The classification should always be consistent with the given reference.
+Use the following criteria:
+5 - Super Luxury: Exclusive luxury and exotic brands (ultra-high price, exclusivity).
+4 - Luxury: Premium brands offering high-end luxury models.
+3 - Upper Mid-range: Brands with some luxury or premium models.
+2 - Mid-range: Popular mainstream brands with mass-market appeal.
+1 - Economic: Entry-level or budget-friendly manufacturers.
+
+Instructions:
+
+If a brand is not listed, classify it by similarity to listed brands, but prioritize sticking to the above reference.
+Output the classification as a table with two columns: Brand and Luxury Level (1-5).
+Ensure reproducibility by not altering the categories in future runs.
+
+Car Brands: 
+Aston Martin, Bentley, Ferrari, Lamborghini, Maserati, McLaren, Rolls-Royce
+Alfa Romeo, Audi, BMW, Cadillac, Jaguar, Land Rover, Lexus, Mercedes-Benz, Porsche, Volvo
+Abarth, Chrysler, Cupra, Dodge, DS AUTOMOBILES, Infiniti, Lotus, MINI, Morgan, Peugeot, Volkswagen
+Chevrolet, Citroen, Fiat, Ford, Honda, Hummer, Hyundai, Jeep, Kia, Mazda, Nissan, Renault, SEAT, SKODA, Subaru, Toyota, Vauxhall
+Aixam, Austin, Caterham, Dacia, Daewoo, Daihatsu, Daimler, Isuzu, Lancia, London Taxis International, MG, Mitsubishi, Perodua, Proton, Rover, Saab, Smart, Ssangyong, Suzuki, TVR
+
+
+```{r}
+unique_brands_luxury <- all_car_adverts %>%
+  select(make, luxury_level) %>%    # Select only relevant columns
+  distinct() %>%                    # Get unique combinations
+  arrange(desc(luxury_level), make) # Sort by luxury level (descending) and brand name
+
+# View the result
+unique_brands_luxury
+
+```
+## Setting up the first data partition for a holy test set and the rest, with which we will train different models with training and validation sets. 
+
+```{r}
+set.seed(5462)
+
+
+#So first I set aside 10% of the data as a holy test set, only to be used at the end of creating each model. With the remaining 85%, we can each play around with how much of that 90% we use as training or testing data, so we create our own sample divisions with that 90%. And also we might each select or use different columns. But the 10% is only for the end
+
+#I also sampled randomly, not stratified with luxury level. My thinking was that we could first sample randomly, and then later try different variables to stratify with as robustness checks
+
+
+
+test_index <- sample(seq_len(nrow(all_car_adverts)), size = 0.03 * nrow(all_car_adverts))
+final_test_set <- all_car_adverts[test_index, ]
+remaining_data <- all_car_adverts[-test_index, ]  # 85% left for training/validation
+
+#To make sure that all test sets have the same observattions as for the randdom forest, we will delete firstly the 
+
+
+
+```
+
+
+
+Random forest model - final
+
+
+```{r}
+
+###### FInal randdom forest mode;l. This one takes a long time to calculate 
+
+# Prepare the training data
+forestdata <- remaining_data %>%
+   mutate(make = fct_lump(make, n = 52)) %>%  # Keep the 52 most frequent brands
+   sample_n(30000) %>%  # Take a random sample of 30,000 rows
+   mutate(across(where(is.character), as.factor)) %>%  # Convert character columns to factors
+   select(-log_price, -model, -variant, -luxury_level)  
+
+
+# Prepare the final test set, only include brands that are also in training data
+final_test_setRF <- final_test_set %>%
+   filter(make %in% forestdata$make) %>%##SO we have the same test set as other mettthods
+   mutate(make = factor(make, levels = levels(forestdata$make))) %>%  # Drop unused levels
+   select(-log_price, -model, -variant, -luxury_level)
+
+# Define mtry values to test
+mtry_valuesRF <- c(3, 6, 9, 12)
+
+# Store models and results
+rf_models <- list()
+resultsRF <- data.frame(mtry = numeric(), MSE = numeric(), R2 = numeric())
+
+# Loop through different mtry values
+for (m in mtry_valuesRF) {
+  # Train Random Forest model
+  rf_model <- randomForest(
+    car_price ~ .,  
+    data = forestdata,  
+    mtry = m,  
+    ntree = 300  # Number of trees
+  )
+
+  # Store the trained model
+  rf_models[[paste0("mtry_", m)]] <- rf_model
+
+  # Predict on final test set
+  rf_preds <- predict(rf_model, newdata = final_test_setRF)
+
+  # Calculate MSE and R²
+  mse <- mean((final_test_setRF$car_price - rf_preds)^2)
+  r2 <- cor(final_test_setRF$car_price, rf_preds)^2
+
+  # Store results
+  resultsRF <- rbind(resultsRF, data.frame(mtry = m, MSE = mse, R2 = r2))
+}
+
+# Print results
+print(resultsRF)
+
+```
+
+
+
+Because the final test set with the random forest excluded two observations, for consistency we will exclude those from the other 
+test sets as well. Therefore, we identify the rows that have been deleted and mark them, based on their unique combination of price and miles.  
+
+```{r}
+final_test_setex <- final_test_set %>%
+   select(-log_price, -model, -variant, -luxury_level)
+
+
+removeprice <- setdiff(final_test_setex, final_test_setRF)$car_price
+removemiles <- setdiff(final_test_setex, final_test_setRF)$miles
+
+
+#The following line of dplyr code will be applied to the preparation of each test set:
+
+# filter(!(car_price %in% removeprice & miles %in% removemiles))
+
+```
+
+
+```{r}
+
+
+#Random forest using out of bag error
+
+rf_modeloob <- randomForest(
+  car_price ~ .,        # Formula: Predict car_price using all other variables
+  data = forestdata,   # Training dataset
+  ntree = 300,          # Number of trees
+  mtry = floor(sqrt(ncol(forestdata) - 1)),  # Number of predictors randomly selected at each split
+  importance = TRUE,    # Compute variable importance
+  keep.forest = TRUE,   # Keep the forest for predictions
+  keep.inbag = TRUE     # Keep track of OOB samples
+)
+
+# Print the model to view the OOB error rate
+print(rf_modeloob)
+
+# Extract and plot the OOB error
+plot(rf_modeloob, main = "OOB Error vs Number of Trees")
+```
+
+As the MSE does not decrease much after 6, we will use 6. 
+
+```{r}
+
+# Extract the model with mtry = 6
+rf_model_6 <- rf_models[["mtry_6"]]
+
+# Plot variable importance
+varImpPlot(rf_model_6, main = "Variable Importance (mtry = 6)")
+
+# Plot error rate
+plot(rf_model_6, main = "Random Forest Error Rate (mtry = 6)")
+
+
+```
+
+```{r}
+
+# Predict on final test set
+rf_preds_6 <- predict(rf_modeloob, newdata = final_test_setRF)
+
+# Create a dataframe to compare actual vs. predicted values
+comparison_RF <- data.frame(
+  Actual = final_test_setRF$car_price,
+  Predicted = rf_preds_6
+)
+
+
+# Plot Actual vs. Predicted values
+library(ggplot2)
+ggplot(comparison_RF, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.5) +  # Scatter plot
+  geom_abline(slope = 1, intercept = 0, color = "red") +  # Ideal line (y = x)
+  theme_minimal() +
+  labs(title = "Actual vs Predicted Car Prices using a random forest",
+       x = "Actual Price",
+       y = "Predicted Price")
+
+```
+
+
+
+
+
+Neural network model - Final 
+
+
+
+
+```{r}
+
+#Cleaner way 
+
+nndatatrain <- remaining_data %>%
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns first #Also luxury level
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) %>%
+  mutate(across(where(is.numeric) & !where(~ all(. %in% c(0, 1))), scale))
+
+
+nndatatest <- final_test_set %>%
+  filter(!(car_price %in% removeprice & miles %in% removemiles)) %>% #Remove missing rows from other methods
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns first #Also luxury level
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) %>%
+  mutate(across(where(is.numeric) & !where(~ all(. %in% c(0, 1))), scale)) 
+
+
+
+```
+
+
+See which decay is best for neural network:
+
+```{r}
+train_control <- trainControl(method = "cv", number = 5)  # 5-fold CV
+
+# Train the model while tuning decay
+nn_tuned <- train(
+  car_price ~ ., 
+  data = nndatatrain,  
+  method = "nnet",
+  trControl = train_control,  
+  tuneGrid = expand.grid(size = c(3, 6, 9), decay = c(0, 0.0001, 0.001, 0.01, 0.1)),
+  linout = TRUE,
+  maxit = 500
+)
+
+# View results
+print(nn_tuned)
+plot(nn_tuned)  # Visualize the effect of decay
+```
+
+
+
+
+
+```{r}
+
+#This takes a while to run 
+
+cv_control <- trainControl(method = "cv", number = 5)  
+
+# Train the neural network model using cross-validation
+nn_model_cv <- train(
+  car_price ~ ., 
+  data = nndatatrain, 
+  method = "nnet",
+  trControl = cv_control,
+  tuneGrid = expand.grid(size = 6, decay = 0.01),  # Hyperparameter tuning
+  maxit = 800,  # Number of iterations
+  linout = TRUE
+)
+
+```
+
+```{r}
+
+# Reverse scaling for predicted prices  
+predicted_pricesNN <- predict(nn_model, nndatatest) %>% 
+  as.vector() * sd(all_car_adverts$car_price, na.rm = TRUE) + mean(all_car_adverts$car_price, na.rm = TRUE)
+
+# Reverse scaling for actual prices  
+actual_pricesNN <- nndatatest$car_price * sd(all_car_adverts$car_price, na.rm = TRUE) + 
+                   mean(all_car_adverts$car_price, na.rm = TRUE)
+
+# Compute MSE  
+mse_nn <- mean((actual_pricesNN - predicted_pricesNN)^2)
+
+# Print MSE  
+print(mse_nn)
+
+
+```
+
+next try xgboost, svr and knn 
+
+```{r}
+
+#For Extreme gradient boosting, we also need to transform factors to dummies and scale 
+
+xgbdatatrain <- remaining_data %>%
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns first #Also luxury level
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) 
+ 
+
+
+xgbdatatest <- final_test_set %>%
+  filter(!(car_price %in% removeprice & miles %in% removemiles)) %>% #remove rows that arent in others
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns first #Also luxury level
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) 
+
+  
+```
+
+```{r}
+
+#Now that are training and test sets are done, we can start preparing them for XGBoost
+
+# Convert training and test sets to XGBoost DMatrix
+
+xgbdatatrainmatrix <- xgbdatatrain %>%
+  select(-car_price) %>%
+  as.matrix() %>%
+  xgb.DMatrix(label = xgbdatatrain$car_price)
+
+xgbdatatestmatrix <- xgbdatatest %>%
+  select(-car_price) %>%
+  as.matrix() %>%
+  xgb.DMatrix(label = xgbdatatest$car_price)
+
+```
+
+```{r}
+#Now we can train the model
+
+#This chunk takes a few minutes to run
+
+xgb_model <- xgboost(
+  data = xgbdatatrainmatrix, 
+  nrounds = 100, 
+  objective = "reg:squarederror", 
+  verbose = 0  # Suppress training output
+)
+
+
+
+#Instead use cross validation for the xgboost
+
+train_control <- trainControl(method = "cv", number = 5)  
+
+# Train XGBoost with CV
+xgb_model <- train(
+  car_price ~ ., 
+  data = xgbdatatrainmatrix,  
+  method = "xgbTree",  
+  trControl = train_control
+)
+
+
+```
+
+```{r}
+# Define XGBoost parameters
+params <- list(
+  objective = "reg:squarederror",  # Use squared error for regression
+  eval_metric = "rmse",            # Root Mean Squared Error as evaluation metric
+  max_depth = 6,                    # Depth of trees
+  eta = 0.1                         # Learning rate
+)
+
+# Perform 5-fold Cross-Validation
+cv_results <- xgb.cv(
+  params = params,
+  data = xgbdatatrainmatrix,  # Use the pre-processed training matrix
+  nrounds = 600,              # Maximum boosting rounds
+  nfold = 5,                  # 5-fold cross-validation
+  stratified = FALSE,         # Not needed for regression
+  verbose = TRUE,
+  early_stopping_rounds = 10  # Stop if no improvement after 10 rounds
+)
+
+# Print the best number of iterations
+print(cv_results$best_iteration)
+```
+```{r}
+
+#ISolate the best xgb 
+
+best_nrounds <- cv_results$best_iteration
+
+xgb_model <- xgb.train(
+  params = params,
+  data = xgbdatatrainmatrix,
+  nrounds = 300 #Or best iteration 
+)
+```
+
+
+
+```{r}
+
+#And predict the results 
+
+predxgb <- predict(xgb_model, xgbdatatestmatrix)
+
+# Calculate Test MSE
+
+predxgb <- as.numeric(predxgb)  # Ensure predictions are numeric
+xgbmse <- mean((xgbdatatest$car_price - predxgb)^2)
+cat("Test MSE with XGB:", xgbmse, "\n")
+
+```
+
+
+
+
+Now for SVR
+
+
+```{r}
+library(fastDummies)
+
+# Step 1: Preprocess Training Data
+svrdatatrain <- remaining_data %>%
+  sample_n(80000) %>%
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) %>%
+  mutate(across(where(is.numeric) & !where(~ all(. %in% c(0, 1))), scale))
+
+# Step 2: Preprocess Test Data (Ensure Same Structure)
+svrdatatest <- final_test_set %>%
+  filter(make %in% unique(remaining_data$make)) %>%  # Keep only brands in training
+  mutate(make = factor(make, levels = levels(remaining_data$make))) %>%
+  select(-model, -variant, -log_price, -luxury_level) %>%
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) %>%
+  mutate(across(where(is.numeric) & !where(~ all(. %in% c(0, 1))), scale))
+
+# Step 3: Match Test Columns to Training Data
+missing_cols <- setdiff(names(svrdatatrain), names(svrdatatest))
+svrdatatest[missing_cols] <- 0  # Add missing columns as zeros
+svrdatatest <- svrdatatest[, names(svrdatatrain)]  # Reorder to match training data
+
+# Step 4: Train SVR Model
+library(e1071)
+svr_model <- svm(car_price ~ ., data = svrdatatrain, type = "eps-regression", kernel = "radial")
+
+# Step 5: Make Predictions
+svr_predictions <- predict(svr_model, newdata = svrdatatest)
+actual_prices <- svrdatatest$car_price * price_sd + price_mean
+
+# Calculate MSE and RMSE
+svrmse <- mean((svr_predictions - actual_prices)^2)
+svrrmse <- sqrt(svrmse)
+
+# Print results
+cat("MSE:", svrmse, "\nRMSE:", svrrmse, "\n")
+
+```
+
+
+```{r}
+train_control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation
+
+# Train the SVM model using the specified cross-validation
+svr_model_cv <- train(
+  car_price ~ ., 
+  data = svrdatatrain, 
+  method = "svmRadial",  # Specify that we're using radial basis kernel
+  trControl = train_control,  # Cross-validation settings
+  tuneLength = 5  # Number of tuning parameters to try (optional)
+)
+
+# View the results
+print(svr_model_cv)
+```
+
+
+
+
+
+
+Now for KNN
+
+
+```{r}
+
+knndatatrain <- remaining_data %>%
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns first #Also luxury level
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) %>%
+  mutate(across(where(is.numeric) & !where(~ all(. %in% c(0, 1))), scale))
+
+knndatatest <- final_test_set %>%
+  filter(!(car_price %in% removeprice & miles %in% removemiles)) %>%  #remove 
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns first #Also luxury level
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) %>%
+  mutate(across(where(is.numeric) & !where(~ all(. %in% c(0, 1))), scale)) %>%
+  filter(!car_price %in% c(4495, 6995)) #exclude the columns needed 
+
+```
+
+
+```{r} 
+
+# Extract predictor variables and target variable
+knntrain_X <- knndatatrain %>% select(-car_price)
+knntrain_Y <- knndatatrain$car_price
+
+knntest_X <- knndatatest %>% select(-car_price)
+knntest_Y <- knndatatest$car_price
+
+
+knn_pred <- knn.reg(train = knntrain_X, test = knntest_X, y = knntrain_Y, k = 8)$pred # why the pred???
+
+```
+
+```{r}
+
+#TAkes long to run 
+
+train_control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation
+
+# Train the k-NN model using the specified cross-validation
+knn_model_cv <- train(
+  car_price ~ ., 
+  data = knndatatrain,   # Replace with your training data
+  method = "knn",        # Specify that we're using k-NN
+  trControl = train_control,  # Cross-validation settings
+  tuneLength = 5         # Number of different values of k to try (optional)
+)
+
+# View the results
+print(knn_model_cv)
+```
+
+
+```{r}
+# Reverse scaling for predicted prices  
+predicted_pricesknn <- knn_pred * sd(all_car_adverts$car_price, na.rm = TRUE) + mean(all_car_adverts$car_price, na.rm = TRUE)
+
+# Reverse scaling for actual prices  
+actual_pricesknn <- knndatatest$car_price * sd(all_car_adverts$car_price, na.rm = TRUE) + 
+                   mean(all_car_adverts$car_price, na.rm = TRUE)
+
+# Compute MSE  
+mse_knn <- mean((actual_pricesknn - predicted_pricesknn)^2)
+```
+
+
+
+Compare mse's 
+
+
+```{r}
+
+
+rfMSE <- resultsRF[2,2]
+
+# Create a data frame dynamically from the MSE variables in your environment
+model_names <- c("Random Forest", "SVR", "Neural Network", "k-NN", "Extreme gradiant boosting")
+mse_values <- mget(c("rfMSE", "svrmse", "mse_nn", "mse_knn", "xgbmse"))
+
+# Create the data frame
+mse_data <- data.frame(Model = model_names, MSE = unlist(mse_values))
+
+# Plot the bar plot
+ggplot(mse_data, aes(x = Model, y = MSE, fill = Model)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  theme_minimal() +
+  labs(title = "MSE for Different Models", y = "Mean Squared Error", x = "Model") +
+  scale_fill_brewer(palette = "Set2")
+```
+
+Because SVR is so huge, lets only look at the rest
+
+```{r}
+# Define the model names, excluding "SVR"
+model_names <- c("Random Forest", "Neural Network", "k-NN", "Extreme gradiant boosting")
+
+# Extract MSE values for the models, excluding "SVR"
+mse_values <- mget(c("rfMSE", "mse_nn", "mse_knn", "xgbmse"))
+
+# Create the data frame
+mse_data <- data.frame(Model = model_names, MSE = unlist(mse_values))
+
+# Plot the bar plot
+ggplot(mse_data, aes(x = Model, y = MSE, fill = Model)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  theme_minimal() +
+  labs(title = "MSE for Different Models", y = "Mean Squared Error", x = "Model") +
+  scale_fill_brewer(palette = "Set2")
+
+```
+
+
+
+Now add to a test dataframe for ease of scrutiny 
+
+```{r}
+
+#So some sets had 86 observations, and one had 84. So delete the two rows in other sets
+
+final_test_setex <- final_test_set %>%
+   select(-log_price, -model, -variant, -luxury_level)
+
+
+removeprice <- setdiff(final_test_setex, final_test_setRF)$car_price
+removemiles <- setdiff(final_test_setex, final_test_setRF)$miles
+
+```
+
+```{r}
+
+#dplyr code to exludde the columns
+
+filter(!(car_price %in% removeprice & miles %in% removemiles))
+
+```
+
+
+
+
+
+
+
+
+```{r}
+
+comparisonframe <- final_test_setRF %>%
+  mutate(Predictedxgb = predxgb,
+         Predictednn = predicted_pricesNN,
+         Predictedknn = predicted_pricesknn,
+         PredictedRF = rf_preds_6)  # Rename appropriately
+
+
+```
+
+
+```{r}
+
+#First need to format into long data
+
+comparisonlong <- comparisonframe %>%
+  pivot_longer(cols = c(PredictedRF, Predictednn, Predictedknn, Predictedxgb), 
+               names_to = "Model", values_to = "Predicted_Price")
+
+```
+
+
+
+
+```{r}
+
+ggplot(comparisonlong, aes(x = car_price, y = Predicted_Price, color = Model)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +  
+  labs(title = "Actual vs Predicted Prices", x = "Actual Price", y = "Predicted Price") +
+  scale_x_continuous(labels = scales::comma) +  
+  scale_y_continuous(labels = scales::comma) + 
+  theme_minimal()
+
+```
+```{r}
+
+# Prepare the dataset
+df_longluxury <- comparisonframe %>%
+  select(car_price, Predictednn, luxury_level)
+
+# Ensure Luxury_Level is numeric
+df_longluxury$luxury_Level <- as.numeric(df_longluxury$luxury_level)
+
+# Scatter plot: Actual Price (x-axis) vs Predicted Price (y-axis) with Luxury Level as color
+ggplot(df_longluxury, aes(x = car_price, y = Predictednn, color = luxury_level)) +
+  geom_point(size = 2, alpha = 0.7) +  # Scatter plot with transparency
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +  # Reference line y=x
+  labs(
+    title = "Actual vs Predicted Prices (Neural network)",
+    x = "Actual Price",
+    y = "Predicted Price",
+    color = "Luxury Level"
+  ) +
+  scale_color_gradient(low = "blue", high = "red") +  
+  scale_x_continuous(labels = scales::comma) +  
+  scale_y_continuous(labels = scales::comma) + # Gradient from low-end to luxury
+  theme_minimal()
+
+```
+
+Notes:
+
+I want to use cross validation with my models as well, except for the random forest
+
+calculate avg residual for different luxury levels 
+
+
+```{r}
+
+```
+
