@@ -1,0 +1,214 @@
+
+```{r}
+library(shiny)
+library(dplyr)
+library(DT)
+library(ggplot2)
+library(shinythemes)
+```
+
+# Load Data
+```{r}
+df <- read.csv("all_car_adverts.csv")
+```
+
+# Clean Data
+```{r}
+# Clean Data
+df_cleaned <- df %>%
+  filter(!is.na(car_price), !is.na(year)) %>%
+  mutate(
+    car_price = as.numeric(gsub("[^0-9.]", "", as.character(car_price))),  # Remove non-numeric characters
+    year = as.numeric(gsub("[^0-9]", "", as.character(year)))  # Remove non-numeric characters
+  ) %>%
+  filter(!is.na(car_price) & car_price > 500 & car_price < 100000,  # Ensure price is in a reasonable range
+         !is.na(year) & year >= 1980 & year <= as.numeric(format(Sys.Date(), "%Y")))  # Keep realistic years
+
+```
+
+# Define UI
+```{r}
+ui <- fluidPage(
+  theme = shinytheme("darkly"),
+  titlePanel("🚗 Car Knowledge Hub"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      h3("Ask about your car"),
+      textInput("car_question", "What would you like to know about your car?",
+                "E.g., What's special about the Ferrari F50?"),
+      actionButton("ask_button", "Ask ChatGPT", class = "btn btn-primary")
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        
+        tabPanel("Car Inquiry",
+          h3("What would you like to know about your car?"),
+          textOutput("submitted_question"),
+          br(),
+          tags$img(src = "f50.jpg", height = "300px", alt = "Car image")
+        ),
+        
+         tabPanel("Variable Info",
+          h3("Predictor Variables Explanation"),
+          p("⚠️ Caution: If you do not know about your vehicle's exact specifications, consult the Car Inquiry tab!",
+          style = "color: #f39c12; font-weight: bold;"),
+          DTOutput("variable_table")
+        ),
+
+        
+        tabPanel("Car Price Prediction",
+          h3("Estimate Your Car's Price"),
+          uiOutput("dynamic_inputs"),
+          actionButton("predict_button", "Predict Price", class = "btn btn-success"),
+          br(), br(),
+          verbatimTextOutput("prediction_output")
+          
+        ),
+        
+        tabPanel("Descriptive Statistics",
+          h3("Car Price Distribution"),
+          plotOutput("price_distribution", height = "400px", width = "100%"),
+          h3("Car Year Distribution"),
+          plotOutput("year_distribution", height = "400px", width = "100%")
+          
+        )  
+      )
+    )
+  )
+)
+
+```
+
+# Define Server Logic
+```{r}
+server <- function(input, output, session) {
+  # Load and clean data
+  df <- read.csv("all_car_adverts.csv")
+  df_cleaned <- df %>%
+    filter(!is.na(car_price), !is.na(year)) %>%
+    mutate(
+      car_price = as.numeric(gsub("[^0-9.]", "", as.character(car_price))),
+      year = as.numeric(gsub("[^0-9]", "", as.character(year)))
+    ) %>%
+    filter(
+      car_price > 500 & car_price < 100000,
+      year >= 1980 & year <= as.numeric(format(Sys.Date(), "%Y"))
+    )
+  
+  # Handle Ask ChatGPT button
+  observeEvent(input$ask_button, {
+    question <- URLencode(input$car_question)
+    chatgpt_url <- paste0("https://chat.openai.com/?q=", question)
+    browseURL(chatgpt_url)
+  })
+  
+  output$submitted_question <- renderText({
+    req(input$car_question)
+    paste("You asked:", input$car_question)
+  })
+
+  # Plots
+  output$price_distribution <- renderPlot({
+    df_filtered <- df_cleaned %>% filter(car_price > 500 & car_price < 100000)
+    ggplot(df_filtered, aes(x = car_price)) +
+      geom_histogram(binwidth = 1000, fill = "green", color = "white") +
+      theme_minimal() +
+      labs(title = "Distribution of Car Prices", x = "Price (GBP)", y = "Count")
+  })
+
+  output$year_distribution <- renderPlot({
+    df_filtered <- df_cleaned %>% filter(year >= 1980 & year <= as.numeric(format(Sys.Date(), "%Y")))
+    ggplot(df_filtered, aes(x = year)) +
+      geom_bar(fill = "blue", color = "white") +
+      theme_minimal() +
+      scale_x_continuous(breaks = seq(1980, as.numeric(format(Sys.Date(), "%Y")), by = 1)) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+      labs(title = "Number of Cars by Year", x = "Year", y = "Count")
+  })
+
+  # --- Dynamic UI for Prediction Inputs ---
+  output$dynamic_inputs <- renderUI({
+    lapply(model_vars, function(var) {
+      if (is.numeric(df_cleaned[[var]])) {
+        numericInput(inputId = paste0("input_", var),
+                     label = paste("Enter", var),
+                     value = round(mean(df_cleaned[[var]], na.rm = TRUE), 2))
+      } else {
+        selectInput(inputId = paste0("input_", var),
+                    label = paste("Select", var),
+                    choices = levels(as.factor(df_cleaned[[var]])))
+      }
+    })
+  })
+
+  # --- Predict and Display Output ---
+  observeEvent(input$predict_button, {
+    # Create input data
+    new_data <- as.data.frame(t(sapply(model_vars, function(var) {
+      input[[paste0("input_", var)]]
+    })))
+    colnames(new_data) <- model_vars
+
+    # Type conversion
+    for (var in model_vars) {
+      if (is.numeric(df_cleaned[[var]])) {
+        new_data[[var]] <- as.numeric(new_data[[var]])
+      } else {
+        new_data[[var]] <- factor(new_data[[var]], levels = levels(as.factor(df_cleaned[[var]])))
+      }
+    }
+
+    # Predict with interval
+    prediction <- predict(final_model, newdata = new_data, interval = "prediction", level = 0.95)
+    pred_price <- round(exp(prediction[1, "fit"]), 2)
+    lower <- round(exp(prediction[1, "lwr"]), 2)
+    upper <- round(exp(prediction[1, "upr"]), 2)
+
+    output$prediction_output <- renderText({
+      paste0("Estimated Car Price: £", format(pred_price, big.mark = ","), 
+             "\n95% Prediction Interval: £", format(lower, big.mark = ","), 
+             " – £", format(upper, big.mark = ","))
+    })
+  })
+  
+  model_vars_description <- list(
+  make = "The brand of your car",
+  car_seller_rating = "The rating of the car's seller out of 5",
+  year = "The model year of your car",
+  miles = "The number of miles your car has been driven",
+  engine_vol = "The volume of your car's engine, denoted in liters",
+  engine_size = "The horsepower value of your car",
+  transmission = "Whether your car has an automatic or manual transmission",
+  num_owner = "The number of owners your car has, including you",
+  ulez = "The degree of which your car adheres to the emission regulations in the UK, 1 for compliance, 0 for non-compliance"
+)
+output$variable_table <- renderDT({
+  desc_df <- data.frame(
+    Variable = names(model_vars_description),
+    Description = unlist(model_vars_description),
+    stringsAsFactors = FALSE
+  )
+  
+  datatable(desc_df,
+    options = list(pageLength = 10),
+    rownames = FALSE,
+    class = "cell-border stripe hover"  # helps improve contrast
+  ) %>% 
+  formatStyle(
+    columns = names(desc_df),
+    color = "white",
+    backgroundColor = "#2c3e50",  # match dark theme
+    fontWeight = "normal"
+  )
+})
+
+
+}
+```
+
+# Run App
+```{r}
+shinyApp(ui = ui, server = server)
+```
