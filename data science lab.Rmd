@@ -1,14 +1,16 @@
 ---
-title: "newdraft"
+title: "Untitled"
 output: html_document
-date: "2025-02-24"
+date: "2025-04-01"
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+## Load Necessary Libraries
 ```{r}
+
 library(readr)        # For reading CSV files
 library(dplyr)        # Data manipulation
 library(tidyr)        # Data tidying and handling missing values
@@ -20,13 +22,12 @@ library(ggplot2)      # For data visualization (optional but useful)
 library(stringr)      # For string manipulation (gsub alternatives)
 library(forcats)      # For working with categorical variables (factors)
 library(purrr)        # Functional programming tools (used in lapply-like functions)
+library(reshape2)
+
 ```
 
-
-## Cleaning the Data
-
-```{r message=FALSE, warning=FALSE}
-
+## Data Cleaning
+```{r}
 all_car_adverts <- read_csv("all_car_adverts 2.csv", 
 col_types = cols(car_price = col_number(), 
 car_seller_rating = col_number(), miles = col_number(), year= col_number()))
@@ -59,8 +60,7 @@ all_car_adverts <- all_car_adverts %>%
   ))
 
 
-
-all_car_adverts <- all_car_adverts %>% select(-c(car_badges, car_specs, car_attention_grabber,car_sub_title, car_seller, car_seller_location,...1, engine_size_unit, discounted, brand_new,first_year_road_tax,full_dealership,part_warranty, part_service,full_service,ulez, car_title))
+all_car_adverts <- all_car_adverts %>% select(-c(car_badges, car_specs, car_attention_grabber,car_sub_title, car_seller, car_seller_location,...1, engine_size_unit, discounted, car_title, reg))
 all_car_adverts <- na.omit(all_car_adverts)
 all_car_adverts <- all_car_adverts %>%
   rename(fuel_type = feul_type)
@@ -76,184 +76,268 @@ all_car_adverts <- all_car_adverts %>% filter(car_price > 0)
 all_car_adverts <- all_car_adverts %>% mutate(log_price = log(car_price))
 ```
 
-## Classification using AI:
-# Prompt:
-Classify the following car brands into five luxury levels from 1 (Economic) to 5 (Super Luxury).
-
-The classification should always be consistent with the given reference.
-Use the following criteria:
-5 - Super Luxury: Exclusive luxury and exotic brands (ultra-high price, exclusivity).
-4 - Luxury: Premium brands offering high-end luxury models.
-3 - Upper Mid-range: Brands with some luxury or premium models.
-2 - Mid-range: Popular mainstream brands with mass-market appeal.
-1 - Economic: Entry-level or budget-friendly manufacturers.
-
-Instructions:
-
-If a brand is not listed, classify it by similarity to listed brands, but prioritize sticking to the above reference.
-Output the classification as a table with two columns: Brand and Luxury Level (1-5).
-Ensure reproducibility by not altering the categories in future runs.
-
-Car Brands: 
-Aston Martin, Bentley, Ferrari, Lamborghini, Maserati, McLaren, Rolls-Royce
-Alfa Romeo, Audi, BMW, Cadillac, Jaguar, Land Rover, Lexus, Mercedes-Benz, Porsche, Volvo
-Abarth, Chrysler, Cupra, Dodge, DS AUTOMOBILES, Infiniti, Lotus, MINI, Morgan, Peugeot, Volkswagen
-Chevrolet, Citroen, Fiat, Ford, Honda, Hummer, Hyundai, Jeep, Kia, Mazda, Nissan, Renault, SEAT, SKODA, Subaru, Toyota, Vauxhall
-Aixam, Austin, Caterham, Dacia, Daewoo, Daihatsu, Daimler, Isuzu, Lancia, London Taxis International, MG, Mitsubishi, Perodua, Proton, Rover, Saab, Smart, Ssangyong, Suzuki, TVR
-
-
 ```{r}
-unique_brands_luxury <- all_car_adverts %>%
-  select(make, luxury_level) %>%    # Select only relevant columns
-  distinct() %>%                    # Get unique combinations
-  arrange(desc(luxury_level), make) # Sort by luxury level (descending) and brand name
+## Eliminating Uncorrelated Variables 
 
-# View the result
-unique_brands_luxury
+# Select only numeric variables
+all_car_adverts_num <- all_car_adverts %>% select_if(is.numeric)
+
+# Compute correlation matrix (numeric variables only)
+cor_matrix <- cor(all_car_adverts_num, use = "pairwise.complete.obs")
+
+# Convert correlation matrix into a long format for visualization
+cor_melted <- melt(cor_matrix)
+
+# Create heatmap
+ggplot(cor_melted, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Correlation Heatmap (Numerical Variables Only)", fill = "Correlation")
 
 ```
-## Linear Model using all variables
 
 ```{r}
-set.seed(5462)
 
-# Stratified sampling to ensure `luxury_level` distribution remains similar
-sample_index <- createDataPartition(all_car_adverts$luxury_level, p = 35000 / nrow(all_car_adverts), list = FALSE)
+# Remove variables with zero variance (constant values)
+all_car_adverts_num <- all_car_adverts_num %>%
+  select(where(~ var(.) > 0))  # Keeps only columns with variance
 
-# Sample 10,000 rows from dataset
-sample_data <- all_car_adverts[sample_index, ]
+# Compute correlation matrix
+cor_matrix <- cor(all_car_adverts_num, use = "pairwise.complete.obs")
 
-# Split the data: 70% Train, 15% Validation, 15% Test
-train_index <- createDataPartition(sample_data$luxury_level, p = 0.7, list = FALSE)
+# Remove variables that have NA correlations (gray areas)
+cor_matrix <- cor_matrix[complete.cases(cor_matrix), complete.cases(cor_matrix)]
+
+# Remove weak correlations (absolute value < 0.1)
+cor_filtered <- cor_matrix[abs(cor_matrix["car_price", ]) >= 0.1, abs(cor_matrix["car_price", ]) >= 0.1]
+
+# Convert to long format for visualization
+cor_melted <- melt(cor_filtered)
+
+# Create heatmap
+ggplot(cor_melted, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Filtered Correlation Heatmap", fill = "Correlation")
+
+```
+
+```{r}
+# Drop specified variables from the dataset as they do not contribute much
+all_car_adverts <- all_car_adverts %>%
+  select(-c(brand_new, first_year_road_tax, full_dealership, part_warranty, part_service, full_service, finance_available))
+
+all_car_adverts <- all_car_adverts %>%
+  filter(!body_type %in% c("limousine", "panel van"))
+
+all_car_adverts <- all_car_adverts %>%
+  filter(!fuel_type %in% c("bi fuel"))
+```
+
+
+## Drop rarely occuring brands according to their frequency in the dataset
+```{r}
+# Count occurrences of each brand
+brand_counts <- table(all_car_adverts$make)
+
+# Convert to a sorted data frame (descending order)
+brand_counts_df <- as.data.frame(brand_counts) %>%
+  arrange(desc(Freq))
+
+# Select the top 46 most common brands
+top_46_brands <- brand_counts_df$Var1[1:46]
+
+# Filter dataset to keep only these brands
+all_car_adverts <- all_car_adverts %>% filter(make %in% top_46_brands)
+```
+
+
+```{r} 
+# set the seed to ensure reproducability
+set.seed(52)
+```
+
+```{r}
+# ----------------------------
+# Set Aside 10% Holy Test Set
+# ----------------------------
+
+# Split dataset: 90% trainable data, 10% final test
+holy_test_index <- createDataPartition(all_car_adverts$log_price, p = 0.9, list = FALSE)
+trainable_data <- all_car_adverts[holy_test_index, ]  # 90% for modeling
+holy_test_data <- all_car_adverts[-holy_test_index, ] # 10% final evaluation set
+
+# ----------------------------
+# STEP 2: Sample 35,000 Observations from Trainable Data
+# ----------------------------
+
+set.seed(52)  # Ensure reproducibility
+sample_index <- sample(nrow(trainable_data), 35000, replace = FALSE)
+sample_data <- trainable_data[sample_index, ]  # Use this instead of full 90%
+
+# ----------------------------
+# STEP 3: Split Sampled Data into Train/Validation/Test (70/15/15)
+# ----------------------------
+
+train_index <- createDataPartition(sample_data$log_price, p = 0.7, list = FALSE)
 train_data <- sample_data[train_index, ]
 remaining_data <- sample_data[-train_index, ]
 
-val_index <- createDataPartition(remaining_data$luxury_level, p = 0.5, list = FALSE)
+val_index <- createDataPartition(remaining_data$log_price, p = 0.5, list = FALSE)
 validation_data <- remaining_data[val_index, ]
 test_data <- remaining_data[-val_index, ]
 
 ```
 
-
+## Simple Linear Regression with Cross Validation
 ```{r}
-excluded_predictors <- c("car_price", "log_price","model","make","variant", "body_type","reg")
 train_val_data <- bind_rows(train_data, validation_data)
-predictors <- setdiff(names(train_val_data), excluded_predictors)
+# Cross-validation control
+cv_control <- trainControl(method = "cv", number = 5)
 
-# Create formula dynamically
-lm_formula <- as.formula(paste("log_price ~", paste(predictors, collapse = " + ")))
+# ----------------------------
+# LOG VERSION
+# ----------------------------
 
-# Fit the linear regression model
-lm_model <- lm(lm_formula, data = train_val_data)
+# Define formula
+excluded_predictors_log <- c("car_price", "log_price", "model", "variant","luxury_level")
+predictors_log <- setdiff(names(train_val_data), excluded_predictors_log)
+lm_formula_log <- as.formula(paste("log_price ~", paste(predictors_log, collapse = " + ")))
 
-# View model summary
-summary(lm_model)
+# Cross-validated model
+lm_cv_model_log <- train(
+  lm_formula_log,
+  data = train_val_data,
+  method = "lm",
+  trControl = cv_control
+)
 
+lm_mse_cv_log <- mean(lm_cv_model_log$resample$RMSE^2)
+lm_r2_cv_log  <- mean(lm_cv_model_log$resample$Rsquared)
 
-# Model Evaluation on Test Set
-# Predict on test set
-lm_preds <- predict(lm_model, newdata = test_data)
+# Fit on full train+val
+final_lm_model_log <- lm(lm_formula_log, data = train_val_data)
 
-# Convert predictions back to original scale
-lm_preds_original_scale <- exp(lm_preds)
-y_true_original_scale <- exp(test_data$log_price)
+# Predictions
+lm_preds_log_test  <- predict(final_lm_model_log, newdata = test_data)
+lm_preds_log_holy  <- predict(final_lm_model_log, newdata = holy_test_data)
 
-# Calculate MSE and R²
-lm_mse <- mean((y_true_original_scale - lm_preds_original_scale)^2)
-lm_r2 <- cor(y_true_original_scale, lm_preds_original_scale)^2
+# Metrics
+lm_mse_test_log  <- mean((test_data$log_price - lm_preds_log_test)^2)
+lm_r2_test_log   <- cor(test_data$log_price, lm_preds_log_test)^2
 
-# Output results
-cat("\nLinear Regression (lm) Performance on Test Set:\n")
-cat("Test MSE:", round(lm_mse, 2), "\n")
-cat("Test R²:", round(lm_r2, 4), "\n")
-
-```
-
-
-
-## Best Subset Selection using Cross Validation
-```{r}
-set.seed(5462)
-
-# Stratified sampling to ensure `luxury_level` distribution remains similar
-sample_index <- createDataPartition(all_car_adverts$luxury_level, p = 35000 / nrow(all_car_adverts), list = FALSE)
-
-# Sample 10,000 rows from dataset
-sample_data <- all_car_adverts[sample_index, ]
-
-# Split the data: 70% Train, 15% Validation, 15% Test
-train_index <- createDataPartition(sample_data$luxury_level, p = 0.7, list = FALSE)
-train_data <- sample_data[train_index, ]
-remaining_data <- sample_data[-train_index, ]
-
-val_index <- createDataPartition(remaining_data$luxury_level, p = 0.5, list = FALSE)
-validation_data <- remaining_data[val_index, ]
-test_data <- remaining_data[-val_index, ]
+lm_mse_holy_log  <- mean((holy_test_data$log_price - lm_preds_log_holy)^2)
+lm_r2_holy_log   <- cor(holy_test_data$log_price, lm_preds_log_holy)^2
 
 ```
 
+```{r}
+# ----------------------------
+# ACTUAL VERSION
+# ----------------------------
+
+excluded_predictors_actual <- c("log_price","car_price", "model", "variant","luxury_level")
+predictors_actual <- setdiff(names(train_val_data), excluded_predictors_actual)
+lm_formula_actual <- as.formula(paste("car_price ~", paste(predictors_actual, collapse = " + ")))
+
+# Cross-validated model
+lm_cv_model_actual <- train(
+  lm_formula_actual,
+  data = train_val_data,
+  method = "lm",
+  trControl = cv_control
+)
+
+lm_mse_cv_actual <- mean(lm_cv_model_actual$resample$RMSE^2)
+lm_r2_cv_actual  <- mean(lm_cv_model_actual$resample$Rsquared)
+
+# Fit on full train+val
+final_lm_model_actual <- lm(lm_formula_actual, data = train_val_data)
+
+# Predictions
+lm_preds_test_actual  <- predict(final_lm_model_actual, newdata = test_data)
+lm_preds_holy_actual  <- predict(final_lm_model_actual, newdata = holy_test_data)
+
+# Metrics
+lm_mse_test_actual <- mean((test_data$car_price - lm_preds_test_actual)^2)
+lm_r2_test_actual  <- cor(test_data$car_price, lm_preds_test_actual)^2
+
+lm_mse_holy_actual <- mean((holy_test_data$car_price - lm_preds_holy_actual)^2)
+lm_r2_holy_actual  <- cor(holy_test_data$car_price, lm_preds_holy_actual)^2
+
+```
 
 ```{r}
-# Load the function to generate formulas
-source("generate_formulas.R")
+library(knitr)
 
-# Function to generate all combinations of predictors
+lm_eval_table <- data.frame(
+  Version = rep(c("Log Price", "Actual Price"), each = 3),
+  Evaluation = rep(c("Cross-Validation (5-Fold)", "Test Set", "Holy Test Set"), 2),
+  MSE = c(lm_mse_cv_log, lm_mse_test_log, lm_mse_holy_log,
+          lm_mse_cv_actual, lm_mse_test_actual, lm_mse_holy_actual),
+  R2 = c(lm_r2_cv_log, lm_r2_test_log, lm_r2_holy_log,
+         lm_r2_cv_actual, lm_r2_test_actual, lm_r2_holy_actual)
+)
+
+kable(lm_eval_table, caption = "Linear Regression Performance (MSE and R²) — Log vs Actual, All Evaluation Sets")
+
+```
+
+## Best Subset Selection with Cross Validation
+
+```{r}
+# LOG PRICE VERSION - Best Subset Selection
+
+# Step 4
+target_bss_log <- "log_price"
+excluded_bss_log <- c("car_price", "log_price", "model", "variant", "luxury_level")
+predictors_bss_log <- setdiff(names(train_data), excluded_bss_log)
+
+# Step 5: Generate formulas
 generate_formulas <- function(p, x_vars, y_var) {
   apply(combn(x_vars, p), 2, function(vars) {
     paste0(y_var, " ~ ", paste(vars, collapse = " + "))
   })
 }
 
-# Define target and predictor variables
-target_var <- "log_price"
-excluded_predictors <- c("car_price", "log_price", "make", "model", "variant","reg","body_type")
-predictors <- setdiff(names(train_data), excluded_predictors)
+predictor_range <- 3:10  # We adjusted this to balance speed and performance
 
-# Generate formulas with 3 to 10 predictors 
-predictor_range <- 3:10
-```
-
-
-```{r}
-
-# Cross-Validation Function
+# Step 6: Evaluate formulas using CV
 evaluate_formula_cv <- function(formula_str, dataset, k = 5) {
   formula_obj <- as.formula(formula_str)
-  n_samples <- nrow(dataset)
-  select_vec <- rep(1:k, length.out = n_samples)
-  data_split <- dataset %>% mutate(folds = sample(select_vec))
-  
+  folds <- sample(rep(1:k, length.out = nrow(dataset)))
+  dataset <- dataset %>% mutate(folds = folds)
+
   mses <- numeric(k)
   r2s <- numeric(k)
-  
-  for (i in seq_len(k)) {
-    data_train <- data_split %>% filter(folds != i)
-    data_valid <- data_split %>% filter(folds == i)
 
-    # Align factor levels
-    factor_cols <- names(Filter(is.factor, data_train))
-    data_valid <- data_valid %>% 
-      mutate(across(all_of(factor_cols), ~ factor(.x, levels = levels(data_train[[cur_column()]]))))
+  for (i in 1:k) {
+    train_fold <- dataset %>% filter(folds != i)
+    valid_fold <- dataset %>% filter(folds == i)
 
-    # Train and predict
-    model <- lm(formula_obj, data = data_train)
-    preds <- predict(model, newdata = data_valid)
-    
-    y_true <- data_valid[[as.character(formula_obj)[2]]]
-    mses[i] <- mean((y_true - preds)^2)
-    r2s[i] <- cor(y_true, preds)^2
+    factor_cols <- names(Filter(is.factor, train_fold))
+    valid_fold <- valid_fold %>%
+      mutate(across(all_of(factor_cols), ~ factor(.x, levels = levels(train_fold[[cur_column()]]))))
+
+    model <- lm(formula_obj, data = train_fold)
+    preds <- predict(model, newdata = valid_fold)
+    actual <- valid_fold[[as.character(formula_obj)[2]]]
+
+    mses[i] <- mean((actual - preds)^2)
+    r2s[i] <- cor(actual, preds)^2
   }
-  
+
   list(mean_mse = mean(mses), mean_r2 = mean(r2s))
 }
-```
 
-
-```{r}
-# Evaluate All Formulas with CV
-# Note: This part might take around 10 minutes
-
-formula_results_cv <- data.frame(
+# Step 7
+bss_results_log <- data.frame(
   predictors_count = integer(),
   formula = character(),
   cv_mse = numeric(),
@@ -262,287 +346,707 @@ formula_results_cv <- data.frame(
 )
 
 for (p in predictor_range) {
-  formulas <- generate_formulas(p = p, x_vars = predictors, y_var = target_var)
-
-  for (formula_str in formulas) {
-    metrics <- evaluate_formula_cv(formula_str, train_data, k = 5)
-
-    formula_results_cv <- rbind(formula_results_cv, data.frame(
+  formulas <- generate_formulas(p, predictors_bss_log, target_bss_log)
+  for (f in formulas) {
+    metrics <- evaluate_formula_cv(f, train_data)
+    bss_results_log <- rbind(bss_results_log, data.frame(
       predictors_count = p,
-      formula = formula_str,
+      formula = f,
       cv_mse = metrics$mean_mse,
       cv_r2 = metrics$mean_r2
     ))
   }
 }
-```
 
+# Step 8: Select best formula
+bss_results_log <- bss_results_log %>%
+  mutate(score = 0.475 * (cv_mse / max(cv_mse)) +
+                 0.475 * (1 - (cv_r2 / max(cv_r2))) +
+                 0.05 * (predictors_count / max(predictors_count)))
 
+best_formula_bss_log <- as.formula(bss_results_log$formula[which.min(bss_results_log$score)])
 
-
-```{r}
-# -------------------------------------------
-# Define weights for MSE and R²
-# -------------------------------------------
-alpha <- 0.45  # Weight for MSE
-beta <- 0.45  # Weight for R²
-gamma <- 0.1  # Penalty for the number of predictors
-
-formula_results_cv <- formula_results_cv %>%
-  mutate(combined_score = alpha * (cv_mse / max(cv_mse)) +
-                        beta * (1 - (cv_r2 / max(cv_r2))) +
-                        gamma * (predictors_count / max(predictors_count)))
-
-# -------------------------------------------
-# Select the Best Formula Based on Combined Score
-# -------------------------------------------
-best_combined_formula <- formula_results_cv %>%
-  filter(combined_score == min(combined_score))
-
-# -------------------------------------------
-# Output the Best Formula and Scores
-# -------------------------------------------
-cat("\nBest formula based on combined MSE and R² score:\n")
-cat("Formula:", best_combined_formula$formula, "\n")
-cat("Mean CV MSE:", round(best_combined_formula$cv_mse, 4), "\n")
-cat("Mean CV R²:", round(best_combined_formula$cv_r2, 4), "\n")
-cat("Combined Score:", round(best_combined_formula$combined_score, 4), "\n")
-
-# Convert the formula string to a formula object
-best_formula_obj <- as.formula(best_combined_formula$formula)
-
-# Train final model on train + validation data
+# Step 9: Fit on train+validation
 train_val_data <- bind_rows(train_data, validation_data)
-final_model <- lm(best_formula_obj, data = train_val_data)
+model_bss_log <- lm(best_formula_bss_log, data = train_val_data)
 
-# Evaluate on test set
-test_preds <- predict(final_model, newdata = test_data)
-subset_preds_original_scale <- exp(test_preds)
-y_true_original_scale <- exp(test_data$log_price)
+# Step 10: Test set
+pred_bss_log_test <- predict(model_bss_log, newdata = test_data)
+mse_bss_test_log <- mean((test_data$log_price - pred_bss_log_test)^2)
+r2_bss_test_log <- cor(test_data$log_price, pred_bss_log_test)^2
 
-# Calculate test metrics
-test_mse <- mean((y_true_original_scale - subset_preds_original_scale)^2)
-test_r2 <- cor(y_true_original_scale, subset_preds_original_scale)^2
+# Step 11: Holy test set
+pred_bss_log_holy <- predict(model_bss_log, newdata = holy_test_data)
+mse_bss_holy_log <- mean((holy_test_data$log_price - pred_bss_log_holy)^2)
+r2_bss_holy_log <- cor(holy_test_data$log_price, pred_bss_log_holy)^2
 
-# Output test results
-cat("\nFinal Model Performance on Test Set:\n")
-cat("Test MSE:", round(test_mse, 2), "\n")
-cat("Test R²:", round(test_r2, 4), "\n")
+# CV results
+mse_bss_cv_log <- min(bss_results_log$cv_mse)
+r2_bss_cv_log <- bss_results_log$cv_r2[which.min(bss_results_log$score)]
+
+```
+
+```{r}
+# ACTUAL PRICE VERSION - Best Subset Selection
+
+target_bss_actual <- "car_price"
+excluded_bss_actual <- c("log_price","car_price", "model", "variant", "reg")
+predictors_bss_actual <- setdiff(names(train_data), excluded_bss_actual)
+
+bss_results_actual <- data.frame(
+  predictors_count = integer(),
+  formula = character(),
+  cv_mse = numeric(),
+  cv_r2 = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (p in predictor_range) {
+  formulas <- generate_formulas(p, predictors_bss_actual, target_bss_actual)
+  for (f in formulas) {
+    metrics <- evaluate_formula_cv(f, train_data)
+    bss_results_actual <- rbind(bss_results_actual, data.frame(
+      predictors_count = p,
+      formula = f,
+      cv_mse = metrics$mean_mse,
+      cv_r2 = metrics$mean_r2
+    ))
+  }
+}
+
+bss_results_actual <- bss_results_actual %>%
+  mutate(score = 0.475 * (cv_mse / max(cv_mse)) +
+                 0.475 * (1 - (cv_r2 / max(cv_r2))) +
+                 0.05 * (predictors_count / max(predictors_count)))
+
+best_formula_bss_actual <- as.formula(bss_results_actual$formula[which.min(bss_results_actual$score)])
+model_bss_actual <- lm(best_formula_bss_actual, data = train_val_data)
+
+pred_bss_actual_test <- predict(model_bss_actual, newdata = test_data)
+mse_bss_test_actual <- mean((test_data$car_price - pred_bss_actual_test)^2)
+r2_bss_test_actual <- cor(test_data$car_price, pred_bss_actual_test)^2
+
+pred_bss_actual_holy <- predict(model_bss_actual, newdata = holy_test_data)
+mse_bss_holy_actual <- mean((holy_test_data$car_price - pred_bss_actual_holy)^2)
+r2_bss_holy_actual <- cor(holy_test_data$car_price, pred_bss_actual_holy)^2
+
+mse_bss_cv_actual <- min(bss_results_actual$cv_mse)
+r2_bss_cv_actual <- bss_results_actual$cv_r2[which.min(bss_results_actual$score)]
+
+```
+
+```{r}
+bss_summary_table <- data.frame(
+  Version = rep(c("Log Price", "Actual Price"), each = 3),
+  Evaluation = rep(c("Cross-Validation (5-Fold)", "Test Set", "Holy Test Set"), 2),
+  MSE = c(mse_bss_cv_log, mse_bss_test_log, mse_bss_holy_log,
+          mse_bss_cv_actual, mse_bss_test_actual, mse_bss_holy_actual),
+  R2 = c(r2_bss_cv_log, r2_bss_test_log, r2_bss_holy_log,
+         r2_bss_cv_actual, r2_bss_test_actual, r2_bss_holy_actual)
+)
+
+kable(bss_summary_table, caption = "Best Subset Selection Performance (MSE and R²) — Log vs Actual")
+
+```
+## Lasso with Cross Validated Lambda
+```{r}
+library(glmnet)
+
+# Combine training and validation sets
+train_val_data <- bind_rows(train_data, validation_data)
+
+# Prepare matrices for log version
+X_lasso_log_train <- model.matrix(log_price ~ . -1, data = train_val_data)
+Y_lasso_log_train <- train_val_data$log_price
+
+X_lasso_log_test <- model.matrix(log_price ~ . -1, data = test_data)
+Y_lasso_log_test <- test_data$log_price
+
+# Cross-validation
+set.seed(52)
+cv_lasso_log <- cv.glmnet(X_lasso_log_train, Y_lasso_log_train, alpha = 1, nfolds = 5)
+best_lambda_lasso_log <- cv_lasso_log$lambda.min
+
+# Final model using best lambda
+model_lasso_log <- glmnet(X_lasso_log_train, Y_lasso_log_train, alpha = 1, lambda = best_lambda_lasso_log)
+
+# Test set predictions
+pred_lasso_log_test <- predict(model_lasso_log, newx = X_lasso_log_test)
+mse_lasso_test_log <- mean((Y_lasso_log_test - pred_lasso_log_test)^2)
+r2_lasso_test_log <- cor(Y_lasso_log_test, pred_lasso_log_test)^2
+
+# Holy test set
+X_lasso_log_holy <- model.matrix(log_price ~ . -1, data = holy_test_data)
+Y_lasso_log_holy <- holy_test_data$log_price
+
+pred_lasso_log_holy <- predict(model_lasso_log, newx = X_lasso_log_holy)
+mse_lasso_holy_log <- mean((Y_lasso_log_holy - pred_lasso_log_holy)^2)
+r2_lasso_holy_log <- cor(Y_lasso_log_holy, pred_lasso_log_holy)^2
+
+# Cross-Validation performance
+mse_lasso_cv_log <- min(cv_lasso_log$cvm)
+r2_lasso_cv_log <- 1 - cv_lasso_log$cvm[cv_lasso_log$lambda == best_lambda_lasso_log] / var(Y_lasso_log_train)
+
+```
+
+```{r}
+# Prepare matrices for actual version
+X_lasso_actual_train <- model.matrix(car_price ~ . -1, data = train_val_data)
+Y_lasso_actual_train <- train_val_data$car_price
+
+X_lasso_actual_test <- model.matrix(car_price ~ . -1, data = test_data)
+Y_lasso_actual_test <- test_data$car_price
+
+# Cross-validation
+set.seed(52)
+cv_lasso_actual <- cv.glmnet(X_lasso_actual_train, Y_lasso_actual_train, alpha = 1, nfolds = 5)
+best_lambda_lasso_actual <- cv_lasso_actual$lambda.min
+
+# Final model
+model_lasso_actual <- glmnet(X_lasso_actual_train, Y_lasso_actual_train, alpha = 1, lambda = best_lambda_lasso_actual)
+
+# Test predictions
+pred_lasso_actual_test <- predict(model_lasso_actual, newx = X_lasso_actual_test)
+mse_lasso_test_actual <- mean((Y_lasso_actual_test - pred_lasso_actual_test)^2)
+r2_lasso_test_actual <- cor(Y_lasso_actual_test, pred_lasso_actual_test)^2
+
+# Holy test set
+X_lasso_actual_holy <- model.matrix(car_price ~ . -1, data = holy_test_data)
+Y_lasso_actual_holy <- holy_test_data$car_price
+
+pred_lasso_actual_holy <- predict(model_lasso_actual, newx = X_lasso_actual_holy)
+mse_lasso_holy_actual <- mean((Y_lasso_actual_holy - pred_lasso_actual_holy)^2)
+r2_lasso_holy_actual <- cor(Y_lasso_actual_holy, pred_lasso_actual_holy)^2
+
+# Cross-validation
+mse_lasso_cv_actual <- min(cv_lasso_actual$cvm)
+r2_lasso_cv_actual <- 1 - cv_lasso_actual$cvm[cv_lasso_actual$lambda == best_lambda_lasso_actual] / var(Y_lasso_actual_train)
+
+```
+
+```{r}
+library(knitr)
+
+lasso_table <- data.frame(
+  Version = rep(c("Log Price", "Actual Price"), each = 3),
+  Evaluation = rep(c("Cross-Validation (5-Fold)", "Test Set", "Holy Test Set"), 2),
+  MSE = c(mse_lasso_cv_log, mse_lasso_test_log, mse_lasso_holy_log,
+          mse_lasso_cv_actual, mse_lasso_test_actual, mse_lasso_holy_actual),
+  R2 = c(r2_lasso_cv_log, r2_lasso_test_log, r2_lasso_holy_log,
+         r2_lasso_cv_actual, r2_lasso_test_actual, r2_lasso_holy_actual)
+)
+
+kable(lasso_table, caption = "Lasso Regression Performance (MSE and R²) — Log vs Actual")
+
+```
+
+## Ridge with Cross Validation
+```{r}
+# Prepare matrices
+X_ridge_log_train <- model.matrix(log_price ~ . -1, data = train_val_data)
+Y_ridge_log_train <- train_val_data$log_price
+
+X_ridge_log_test <- model.matrix(log_price ~ . -1, data = test_data)
+Y_ridge_log_test <- test_data$log_price
+
+# Cross-validation
+set.seed(52)
+cv_ridge_log <- cv.glmnet(X_ridge_log_train, Y_ridge_log_train, alpha = 0, nfolds = 5)
+best_lambda_ridge_log <- cv_ridge_log$lambda.min
+
+# Final model
+model_ridge_log <- glmnet(X_ridge_log_train, Y_ridge_log_train, alpha = 0, lambda = best_lambda_ridge_log)
+
+# Test set
+pred_ridge_log_test <- predict(model_ridge_log, newx = X_ridge_log_test)
+mse_ridge_test_log <- mean((Y_ridge_log_test - pred_ridge_log_test)^2)
+r2_ridge_test_log <- cor(Y_ridge_log_test, pred_ridge_log_test)^2
+
+# Holy test set
+X_ridge_log_holy <- model.matrix(log_price ~ . -1, data = holy_test_data)
+Y_ridge_log_holy <- holy_test_data$log_price
+
+pred_ridge_log_holy <- predict(model_ridge_log, newx = X_ridge_log_holy)
+mse_ridge_holy_log <- mean((Y_ridge_log_holy - pred_ridge_log_holy)^2)
+r2_ridge_holy_log <- cor(Y_ridge_log_holy, pred_ridge_log_holy)^2
+
+# CV performance
+mse_ridge_cv_log <- min(cv_ridge_log$cvm)
+r2_ridge_cv_log <- 1 - cv_ridge_log$cvm[cv_ridge_log$lambda == best_lambda_ridge_log] / var(Y_ridge_log_train)
+
+```
+
+```{r}
+# Prepare matrices
+X_ridge_actual_train <- model.matrix(car_price ~ . -1, data = train_val_data)
+Y_ridge_actual_train <- train_val_data$car_price
+
+X_ridge_actual_test <- model.matrix(car_price ~ . -1, data = test_data)
+Y_ridge_actual_test <- test_data$car_price
+
+# Cross-validation
+set.seed(52)
+cv_ridge_actual <- cv.glmnet(X_ridge_actual_train, Y_ridge_actual_train, alpha = 0, nfolds = 5)
+best_lambda_ridge_actual <- cv_ridge_actual$lambda.min
+
+# Final model
+model_ridge_actual <- glmnet(X_ridge_actual_train, Y_ridge_actual_train, alpha = 0, lambda = best_lambda_ridge_actual)
+
+# Test set
+pred_ridge_actual_test <- predict(model_ridge_actual, newx = X_ridge_actual_test)
+mse_ridge_test_actual <- mean((Y_ridge_actual_test - pred_ridge_actual_test)^2)
+r2_ridge_test_actual <- cor(Y_ridge_actual_test, pred_ridge_actual_test)^2
+
+# Holy test set
+X_ridge_actual_holy <- model.matrix(car_price ~ . -1, data = holy_test_data)
+Y_ridge_actual_holy <- holy_test_data$car_price
+
+pred_ridge_actual_holy <- predict(model_ridge_actual, newx = X_ridge_actual_holy)
+mse_ridge_holy_actual <- mean((Y_ridge_actual_holy - pred_ridge_actual_holy)^2)
+r2_ridge_holy_actual <- cor(Y_ridge_actual_holy, pred_ridge_actual_holy)^2
+
+# CV performance
+mse_ridge_cv_actual <- min(cv_ridge_actual$cvm)
+r2_ridge_cv_actual <- 1 - cv_ridge_actual$cvm[cv_ridge_actual$lambda == best_lambda_ridge_actual] / var(Y_ridge_actual_train)
+
+```
+
+```{r}
+library(knitr)
+
+ridge_table <- data.frame(
+  Version = rep(c("Log Price", "Actual Price"), each = 3),
+  Evaluation = rep(c("Cross-Validation (5-Fold)", "Test Set", "Holy Test Set"), 2),
+  MSE = c(mse_ridge_cv_log, mse_ridge_test_log, mse_ridge_holy_log,
+          mse_ridge_cv_actual, mse_ridge_test_actual, mse_ridge_holy_actual),
+  R2 = c(r2_ridge_cv_log, r2_ridge_test_log, r2_ridge_holy_log,
+         r2_ridge_cv_actual, r2_ridge_test_actual, r2_ridge_holy_actual)
+)
+
+kable(ridge_table, caption = "Ridge Regression Performance (MSE and R²) — Log vs Actual")
+
+```
+
+```{r}
+cv_log_results <- data.frame(
+  Model = c("Linear", "Best Subset", "Lasso", "Ridge"),
+  MSE = c(lm_mse_cv_log, mse_bss_cv_log, mse_lasso_cv_log, mse_ridge_cv_log),
+  R2  = c(lm_r2_cv_log, r2_bss_cv_log, r2_lasso_cv_log, r2_ridge_cv_log)
+)
+
+# MSE Bar Chart
+ggplot(cv_log_results, aes(x = Model, y = MSE, fill = Model)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Cross-Validated MSE (Log Price)", y = "MSE") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# R² Bar Chart
+ggplot(cv_log_results, aes(x = Model, y = R2, fill = Model)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Cross-Validated R² (Log Price)", y = "R²") +
+  theme_minimal() +
+  theme(legend.position = "none")
 
 
 ```
 ```{r}
-# Select the best formula for each number of predictors
-best_mse_by_predictors <- formula_results_cv %>%
-  group_by(predictors_count) %>%
-  slice_min(order_by = cv_mse, n = 1) %>%  # Selects the row with the minimum MSE
-  ungroup()
+cv_actual_results <- data.frame(
+  Model = c("Linear", "Best Subset", "Lasso", "Ridge"),
+  MSE = c(lm_mse_cv_actual, mse_bss_cv_actual, mse_lasso_cv_actual, mse_ridge_cv_actual),
+  R2  = c(lm_r2_cv_actual, r2_bss_cv_actual, r2_lasso_cv_actual, r2_ridge_cv_actual)
+)
 
-# Plot MSE vs. Number of Predictors
-ggplot(best_mse_by_predictors, aes(x = predictors_count, y = cv_mse)) +
-  geom_line(color = "steelblue", size = 1.2) +
-  geom_point(color = "red", size = 3) +
+# MSE Bar Chart
+ggplot(cv_actual_results, aes(x = Model, y = MSE, fill = Model)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Cross-Validated MSE (Actual Price)", y = "MSE") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# R² Bar Chart
+ggplot(cv_actual_results, aes(x = Model, y = R2, fill = Model)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Cross-Validated R² (Actual Price)", y = "R²") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+```{r}
+# Log Price version: Actual vs Predicted
+log_scatter_df <- data.frame(
+  Actual = holy_test_data$log_price,
+  Linear = lm_preds_log_holy,
+  BestSubset = pred_bss_log_holy,
+  Lasso = as.numeric(pred_lasso_log_holy),
+  Ridge = as.numeric(pred_ridge_log_holy)
+)
+
+# Actual Price version: Actual vs Predicted
+actual_scatter_df <- data.frame(
+  Actual = holy_test_data$car_price,
+  Linear = lm_preds_holy_actual,
+  BestSubset = pred_bss_actual_holy,
+  Lasso = as.numeric(pred_lasso_actual_holy),
+  Ridge = as.numeric(pred_ridge_actual_holy)
+)
+
+```
+
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+
+plot_scatter <- function(df, pred_col, title, color) {
+  ggplot(df, aes(x = Actual, y = .data[[pred_col]])) +
+    geom_point(alpha = 0.4, color = color) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+    labs(title = title, x = "Actual", y = "Predicted") +
+    theme_minimal()
+}
+
+```
+
+```{r}
+p_log_lin <- plot_scatter(log_scatter_df, "Linear", "Linear - Log", "blue")
+p_log_bss <- plot_scatter(log_scatter_df, "BestSubset", "Best Subset - Log", "red")
+p_log_lasso <- plot_scatter(log_scatter_df, "Lasso", "Lasso - Log", "green")
+p_log_ridge <- plot_scatter(log_scatter_df, "Ridge", "Ridge - Log", "purple")
+
+```
+
+```{r}
+p_act_lin <- plot_scatter(actual_scatter_df, "Linear", "Linear - Actual", "blue")
+p_act_bss <- plot_scatter(actual_scatter_df, "BestSubset", "Best Subset - Actual", "red")
+p_act_lasso <- plot_scatter(actual_scatter_df, "Lasso", "Lasso - Actual", "green")
+p_act_ridge <- plot_scatter(actual_scatter_df, "Ridge", "Ridge - Actual", "purple")
+
+```
+
+```{r}
+grid.arrange(p_log_lin, p_log_bss, p_log_lasso, p_log_ridge, 
+             ncol = 2, 
+             top = "Predicted vs Actual (Log Price) — All Models")
+
+```
+
+```{r}
+grid.arrange(p_act_lin, p_act_bss, p_act_lasso, p_act_ridge, 
+             ncol = 2, 
+             top = "Predicted vs Actual (Actual Price) — All Models")
+
+```
+```{r}
+library(tidyr)
+library(ggplot2)
+
+# Prepare values
+model_eval_df <- data.frame(
+  Model = c("Linear", "Best Subset", "Lasso", "Ridge"),
+  RMSE = c(
+    sqrt(lm_mse_holy_actual),
+    sqrt(mse_bss_holy_actual),
+    sqrt(mse_lasso_holy_actual),
+    sqrt(mse_ridge_holy_actual)
+  ),
+  R2 = c(
+    lm_r2_holy_actual,
+    r2_bss_holy_actual,
+    r2_lasso_holy_actual,
+    r2_ridge_holy_actual
+  )
+)
+
+# Scale R2 to match RMSE range (so they’re both visible)
+rmse_range <- range(model_eval_df$RMSE)
+r2_range <- range(model_eval_df$R2)
+scaling_factor <- diff(rmse_range) / diff(r2_range)
+
+model_eval_df$R2_scaled <- (model_eval_df$R2 - min(model_eval_df$R2)) * scaling_factor + min(model_eval_df$RMSE)
+
+# Reshape to long format
+plot_data <- model_eval_df %>%
+  select(Model, RMSE, R2_scaled) %>%
+  rename(R2 = R2_scaled) %>%
+  pivot_longer(cols = c(RMSE, R2), names_to = "Metric", values_to = "Value")
+
+# Plot
+ggplot(plot_data, aes(x = Model, y = Value, fill = Metric)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7)) +
+  scale_fill_manual(values = c("skyblue", "tomato")) +
   labs(
-    title = "Best MSE by Number of Predictors",
-    x = "Number of Predictors",
-    y = "Cross-Validated MSE"
+    title = "Holy Test Set Performance (Actual Price)",
+    y = "Scaled Metric Value",
+    x = "Model"
   ) +
   theme_minimal() +
   theme(
-    plot.title = element_text(size = 14, face = "bold"),
-    axis.title = element_text(size = 12)
+    legend.position = "top",
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+
+```
+
+```{r}
+# Compute RMSE and prepare values
+model_eval_df <- data.frame(
+  Model = c("Linear", "Best Subset", "Lasso", "Ridge"),
+  RMSE = c(
+    sqrt(lm_mse_holy_actual),
+    sqrt(mse_bss_holy_actual),
+    sqrt(mse_lasso_holy_actual),
+    sqrt(mse_ridge_holy_actual)
+  ),
+  R2 = c(
+    lm_r2_holy_actual,
+    r2_bss_holy_actual,
+    r2_lasso_holy_actual,
+    r2_ridge_holy_actual
+  )
+)
+
+# Scale R² to RMSE range
+range_rmse <- range(model_eval_df$RMSE)
+range_r2 <- range(model_eval_df$R2)
+scale_factor <- diff(range_rmse) / diff(range_r2)
+
+model_eval_df$R2_scaled <- (model_eval_df$R2 - min(model_eval_df$R2)) * scale_factor + min(model_eval_df$RMSE)
+
+# Plot with both bars
+ggplot(model_eval_df, aes(x = Model)) +
+  geom_bar(aes(y = RMSE, fill = "RMSE"), stat = "identity", position = "dodge", width = 0.35) +
+  geom_bar(aes(y = R2_scaled, fill = "R²"), stat = "identity", position = position_nudge(x = 0.35), width = 0.35) +
+  scale_fill_manual(values = c("RMSE" = "skyblue", "R²" = "tomato")) +
+  scale_y_continuous(
+    name = "RMSE",
+    sec.axis = sec_axis(~ (. - min(model_eval_df$RMSE)) / scale_factor + min(model_eval_df$R2),
+                        name = "R²")
+  ) +
+  labs(title = "Holy Test Set Performance (Actual Price)", x = "Model", fill = "") +
+  theme_minimal() +
+  theme(
+    axis.title.y.left = element_text(color = "skyblue4"),
+    axis.text.y.left = element_text(color = "skyblue4"),
+    axis.title.y.right = element_text(color = "tomato4"),
+    axis.text.y.right = element_text(color = "tomato4"),
+    legend.position = "top",
+    plot.title = element_text(face = "bold", hjust = 0.5)
   )
 
 ```
 
 ```{r}
-rmse <- sqrt(158312930 )
-rmse
-```
-```{r}
-mean_price <- mean(all_car_adverts$car_price)
-sd_price <- sd(all_car_adverts$car_price)
-
-mean_price
-sd_price
-```
-```{r}
-baseline_mse <- mean((test_data$car_price - mean(train_data$car_price))^2)
-baseline_rmse <- sqrt(baseline_mse)
-baseline_rmse
-```
-
-```{r}
-(baseline_rmse-rmse)/baseline_rmse
-```
-
-
-## Lasso with a Fixed Lambda
-
-
-```{r}
-set.seed(5462)
-# Stratified sampling to ensure `luxury_level` distribution remains similar
-sample_index <- createDataPartition(all_car_adverts$luxury_level, p = 35000 / nrow(all_car_adverts), list = FALSE)
-
-# Sample 10,000 rows from dataset
-sample_data <- all_car_adverts[sample_index, ]
-
-train_index <- createDataPartition(all_car_adverts$luxury_level, p = 0.7, list = FALSE)
-train_data <- all_car_adverts[train_index, ]
-remaining_data <- all_car_adverts[-train_index, ]
-
-val_index <- createDataPartition(remaining_data$luxury_level, p = 0.5, list = FALSE)
-validation_data <- remaining_data[val_index, ]
-test_data <- remaining_data[-val_index, ]
-
-train_val_data <- bind_rows(train_data, validation_data)
-
-# Define predictors (excluding target and unwanted variables)
-excluded_predictors <- c("car_price", "log_price", "make", "model", "variant", "reg")
-predictors <- setdiff(names(train_val_data), excluded_predictors)
-
-# Convert predictors to matrix
-x_train_val <- model.matrix(~ ., data = train_val_data[, predictors])[, -1]
-y_train_val <- train_val_data$log_price
-
-x_test <- model.matrix(~ ., data = test_data[, predictors])[, -1]
-y_test <- test_data$log_price
-
-# Train LASSO Model with fixed lambda
-fixed_lambda <- 0.05
-lasso_model <- glmnet(
-  x_train_val, y_train_val,
-  alpha = 1,                 # LASSO
-  lambda = fixed_lambda,
-  standardize = TRUE
-)
-
-# Predict and evaluate
-lasso_preds <- predict(lasso_model, newx = x_test)
-mse_lasso <- mean((y_test - lasso_preds)^2)
-cat("LASSO Test MSE:", round(mse_lasso, 4), "\n")
-
-# Exponentiate actual and predicted values to original scale
-y_test_original <- exp(y_test)
-lasso_preds_original <- exp(lasso_preds)
-
-# Calculate MSE in original scale
-mse_lasso_original <- mean((y_test_original - lasso_preds_original)^2)
-cat("LASSO Test MSE (Original Scale):", round(mse_lasso_original, 2), "\n")
-
-# Calculate RMSE (for interpretability in price units)
-rmse_lasso_original <- sqrt(mse_lasso_original)
-cat("LASSO Test RMSE (Original Scale):", round(rmse_lasso_original, 2), "\n")
-```
-
-## Lasso with cross validated Lambda
-
-```{r}
- library(glmnet)
-
-# ✅ Perform LASSO with cross-validation (default k=10 folds)
-set.seed(5462)  # Ensures reproducibility
-cv_lasso_model <- cv.glmnet(
-  x_train_val, y_train_val,
-  alpha = 1,                # LASSO (L1 regularization)
-  standardize = TRUE,       # Standardize predictors
-  nfolds = 10               # Number of cross-validation folds
-)
-
-# ✅ Optimal lambda values
-best_lambda <- cv_lasso_model$lambda.min       # Lambda with minimum MSE
-lambda_1se <- cv_lasso_model$lambda.1se        # More regularized (simpler) model
-
-cat("✅ Best Lambda (Min MSE):", round(best_lambda, 5), "\n")
-cat("✅ Lambda (1-SE Rule):", round(lambda_1se, 5), "\n")
-
-# ✅ Predict using the best lambda (lambda.min)
-lasso_cv_preds_min <- predict(cv_lasso_model, s = best_lambda, newx = x_test)
-mse_lasso_min <- mean((y_test - lasso_cv_preds_min)^2)
-cat("✅ LASSO CV Test MSE (lambda.min):", round(mse_lasso_min, 4), "\n")
-
-# ✅ Predict using the 1-SE lambda (lambda.1se)
-lasso_cv_preds_1se <- predict(cv_lasso_model, s = lambda_1se, newx = x_test)
-mse_lasso_1se <- mean((y_test - lasso_cv_preds_1se)^2)
-cat("✅ LASSO CV Test MSE (lambda.1se):", round(mse_lasso_1se, 4), "\n")
-
-
-# ✅ Convert predictions and true values back to original scale
-y_test_original <- exp(y_test)
-lasso_preds_min_original <- exp(lasso_cv_preds_min)
-lasso_preds_1se_original <- exp(lasso_cv_preds_1se)
-
-# ✅ Calculate MSE and RMSE on the original scale
-mse_min_original <- mean((y_test_original - lasso_preds_min_original)^2)
-rmse_min_original <- sqrt(mse_min_original)
-
-mse_1se_original <- mean((y_test_original - lasso_preds_1se_original)^2)
-rmse_1se_original <- sqrt(mse_1se_original)
-
-cat("✅ LASSO CV Test MSE (Original Scale, lambda.min):", round(mse_min_original, 2), "\n")
-cat("✅ LASSO CV Test RMSE (Original Scale, lambda.min):", round(rmse_min_original, 2), "\n")
-
-cat("✅ LASSO CV Test MSE (Original Scale, lambda.1se):", round(mse_1se_original, 2), "\n")
-cat("✅ LASSO CV Test RMSE (Original Scale, lambda.1se):", round(rmse_1se_original, 2), "\n")
-
-```
-## Comparison
-
-
-```{r}
-# ✅ Predictions (in original scale)
-lm_preds_original_scale                  # OLS predictions
-subset_preds_original_scale              # Best Subset predictions
-lasso_preds_original   # LASSO with fixed lambda predictions
-lasso_preds_min_original        # LASSO with CV-selected lambda predictions
-
-# ✅ True values in original scale
-y_test_original <- exp(y_test)
-
-# ✅ Calculate MSEs
-mse_ols <- mean((y_test_original - lm_preds_original_scale)^2)
-mse_subset <- mean((y_test_original - subset_preds_original_scale)^2)
-mse_lasso_fixed <- mean((y_test_original - lasso_preds_original)^2)
-mse_lasso_cv <- mean((y_test_original - lasso_preds_min_original)^2)
-
-
-```
-
-```{r}
-library(ggplot2)
-library(tibble)
-library(dplyr)
-
-# ✅ Create a data frame with MSE values
-mse_results <- tibble(
-  Method = c("LM", "Best Subset", "LASSO (Fixed λ)", "LASSO (CV λ)"),
-  MSE = c(mse_ols, mse_subset, mse_lasso_fixed, mse_lasso_cv)
-)
-
-```
-
-```{r}
-# ✅ Plot the comparison
-ggplot(mse_results, aes(x = Method, y = MSE, fill = Method)) +
-  geom_bar(stat = "identity", color = "black", width = 0.7) +
-  geom_text(aes(label = round(MSE, 0)), vjust = -0.5, size = 4) +  # Add MSE values above bars
+ggplot(plot_df, aes(x = Model, y = Value, fill = Metric)) +
+  geom_bar(stat = "identity", 
+           position = position_dodge(width = 0.75), 
+           width = 0.55) +
+  scale_fill_manual(values = c("skyblue", "tomato"), labels = c("RMSE", "R²")) +
+  scale_y_continuous(
+    name = "RMSE",
+    sec.axis = sec_axis(~ (. - min(model_eval_df$RMSE)) / scale_factor + min(model_eval_df$R2),
+                        name = "R²")
+  ) +
   labs(
-    title = "✅ Comparison of Test Set MSE (Original Car Price Scale)",
+    title = "Holy Test Set Performance Comparison (Actual Price)",
     x = "Model",
-    y = "Test MSE"
+    fill = ""
   ) +
   theme_minimal() +
   theme(
-    legend.position = "none",
-    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
-  ) +
-  scale_fill_viridis_d()
+    axis.title.y.left = element_text(color = "black"),
+    axis.text.y.left = element_text(color = "black"),
+    axis.title.y.right = element_text(color = "black"),
+    axis.text.y.right = element_text(color = "black"),
+    legend.position = "top",
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
 
 ```
 
 
+```{r}
+# Load required lib
+library(ggplot2)
+library(dplyr)
+
+# Separate plots per luxury level
+luxury_levels <- sort(unique(residual_summary$luxury_level))
+
+# Loop over each luxury level and create a plot
+for (lvl in luxury_levels) {
+  data_subset <- residual_summary %>%
+    filter(luxury_level == lvl) %>%
+    arrange(desc(mean_abs_pct_residual)) %>%
+    mutate(make = factor(make, levels = make))  # preserve order
+
+  p <- ggplot(data_subset, aes(x = make, y = mean_abs_pct_residual, fill = make)) +
+    geom_bar(stat = "identity") +
+    scale_fill_viridis_d(option = "C", begin = 0.1, end = 0.9) +  # colorful but aesthetic
+    labs(
+      title = paste("Luxury Level", lvl, "- Mean Abs. % Residuals by Brand"),
+      x = "Car Brand",
+      y = "Mean Absolute Percentage Residual",
+      fill = "Brand"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      legend.position = "none"
+    )
+
+  print(p)  # display the plot
+}
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# --- STEP 1: Predict and compute % residuals (signed) ---
+holy_test_data$predicted_lasso <- as.numeric(pred_lasso_actual_holy)
+holy_test_data$pct_residual <- (holy_test_data$car_price - holy_test_data$predicted_lasso) / holy_test_data$car_price
+
+# --- STEP 2: Aggregate mean % residuals by brand & luxury level ---
+residual_summary <- holy_test_data %>%
+  group_by(luxury_level, make) %>%
+  summarise(mean_pct_residual = mean(pct_residual, na.rm = TRUE)) %>%
+  arrange(luxury_level, desc(mean_pct_residual))
+
+# --- STEP 3: Generate one plot per luxury level ---
+luxury_levels <- sort(unique(residual_summary$luxury_level))
+
+for (lvl in luxury_levels) {
+  data_subset <- residual_summary %>%
+    filter(luxury_level == lvl) %>%
+    arrange(desc(mean_pct_residual)) %>%
+    mutate(make = factor(make, levels = make))
+
+  p <- ggplot(data_subset, aes(x = make, y = mean_pct_residual, fill = make)) +
+    geom_bar(stat = "identity") +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    scale_fill_viridis_d(option = "C", begin = 0.1, end = 0.9) +
+    labs(
+      title = paste("Luxury Level", lvl, "- Mean Percentage Residuals by Brand"),
+      x = "Car Brand",
+      y = "Mean Percentage Residual",
+      fill = "Brand"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      legend.position = "none"
+    )
+
+  print(p)
+}
+
+```
+```{r}
+# Group by brand and compute mean signed percentage residual
+brand_bias_summary <- holy_test_data %>%
+  group_by(make) %>%
+  summarise(mean_pct_residual = mean(pct_residual, na.rm = TRUE),
+            n = n()) %>%
+  arrange(mean_pct_residual)
+
+# Optional: filter out brands with too few observations
+brand_bias_summary <- brand_bias_summary %>% filter(n >= 5)
+
+# Top 5 overpredicted (most negative)
+top5_overpredicted <- head(brand_bias_summary, 5)
+
+# Top 5 underpredicted (most positive)
+top5_underpredicted <- tail(brand_bias_summary, 5)
+
+# Display
+library(knitr)
+kable(top5_overpredicted, caption = "🔻 Top 5 Overpredicted Brands (Model Predicts Too High)")
+kable(top5_underpredicted[order(-top5_underpredicted$mean_pct_residual), ], 
+      caption = "🔺 Top 5 Underpredicted Brands (Model Predicts Too Low)")
+
+```
 
 
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Step 1: Calculate signed percentage residuals
+holy_test_data$predicted_lasso <- as.numeric(pred_lasso_actual_holy)
+holy_test_data$pct_residual <- (holy_test_data$car_price - holy_test_data$predicted_lasso) / holy_test_data$car_price
+
+# Step 2: Group summary
+residual_summary <- holy_test_data %>%
+  group_by(luxury_level, make) %>%
+  summarise(
+    mean_pct_residual = mean(pct_residual, na.rm = TRUE),
+    brand_count = n()
+  ) %>%
+  arrange(luxury_level, desc(mean_pct_residual))
+
+# Step 3: Loop over all luxury levels and plot
+luxury_levels <- sort(unique(residual_summary$luxury_level))
+
+for (lvl in luxury_levels) {
+  data_subset <- residual_summary %>%
+    filter(luxury_level == lvl) %>%
+    arrange(desc(mean_pct_residual)) %>%
+    mutate(make = factor(make, levels = make))
+
+  # Match scales between residuals and counts
+  max_left <- max(abs(data_subset$mean_pct_residual), na.rm = TRUE)
+  max_right <- max(data_subset$brand_count, na.rm = TRUE)
+  scale_factor <- max_left / max_right
+
+  p <- ggplot(data_subset, aes(x = make)) +
+    # Mean percentage residual bars
+    geom_bar(aes(y = mean_pct_residual, fill = make), stat = "identity") +
+
+    # Brand count as black line (scaled, non-negative)
+    geom_segment(aes(
+      x = make, xend = make,
+      y = 0,
+      yend = pmax(0, brand_count * scale_factor)
+    ), color = "black", linewidth = 0.8) +
+
+    # Horizontal zero line
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = 0.15, linetype = "dotted", color = "red", linewidth = 0.7) +
+    geom_hline(yintercept = -0.15, linetype = "dotted", color = "red", linewidth = 0.7) +
+
+    # Left: Residuals / Right: Brand Count
+    scale_y_continuous(
+      name = "Mean Percentage Residual",
+      sec.axis = sec_axis(
+        trans = ~ . / scale_factor,
+        name = "Brand Count",
+        breaks = pretty(c(0, max_right))
+      )
+    ) +
+
+    # Colors and titles
+    scale_fill_viridis_d(option = "C", begin = 0.1, end = 0.9) +
+    labs(
+      title = paste("Luxury Level", lvl, "- Residual Bias (Bars) + Brand Count (Black Line)"),
+      x = "Car Brand"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      axis.title.y.left = element_text(color = "steelblue4"),
+      axis.title.y.right = element_text(color = "black"),
+      legend.position = "none"
+    )
+
+  print(p)
+}
+
+```
 
 
