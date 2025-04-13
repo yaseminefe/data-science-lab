@@ -691,3 +691,484 @@ linear_model_perf %>%
   row_spec(1:4, background = "#f7f7f7")                                     # Light gray rows for clarity
 
 ```
+## Incorporating Luxury Levels to Linear Models with Visualizations
+
+```{r}
+## Incorporating Luxury Levels to Linear Models with Visualizations
+
+# ---------------------------------------------
+# SECTION 1: Visualize Brand-Level Residuals by Luxury Level
+# ---------------------------------------------
+
+# I start by identifying the unique luxury levels available in the dataset.
+luxury_levels <- sort(unique(residual_summary$luxury_level))
+
+# Then, I create a plot for each luxury level separately to visualize brand-level residual patterns.
+for (lvl in luxury_levels) {
+  data_subset <- residual_summary %>%
+    filter(luxury_level == lvl) %>%
+    arrange(desc(pct_residual)) %>%
+    mutate(make = factor(make, levels = make))  # This reorders brands for better plot readability
+
+  # I build a colorful and minimalistic bar chart of average residuals for each brand.
+  p <- ggplot(data_subset, aes(x = make, y = pct_residual, fill = make)) +
+    geom_bar(stat = "identity") +
+    scale_fill_viridis_d(option = "C", begin = 0.1, end = 0.9) +  # Aesthetic and colorblind-friendly
+    labs(
+      title = paste("Luxury Level", lvl, "- Mean Abs. % Residuals by Brand"),
+      x = "Car Brand",
+      y = "Mean Absolute Percentage Residual",
+      fill = "Brand"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),  # Improve label readability
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      legend.position = "none"  # I remove the legend to reduce visual clutter
+    )
+
+  print(p)  # Show plot
+}
+
+```
+
+```{r}
+# ---------------------------------------------
+# SECTION 2: Compute Lasso Percentage Residuals
+# ---------------------------------------------
+
+# Here, I calculate signed percentage residuals (error in %) from the Lasso model.
+# This helps assess how much the model overestimates or underestimates price.
+holy_test_data$predicted_lasso <- as.numeric(pred_lasso_actual_test)
+holy_test_data$pct_residual <- (holy_test_data$car_price - holy_test_data$predicted_lasso) / holy_test_data$car_price * 100
+
+```
+
+```{r}
+# ---------------------------------------------
+# SECTION 3: Identify the Most Over- and Underpredicted Brands
+# ---------------------------------------------
+
+# I summarize the average percentage residual for each brand to detect consistent prediction bias.
+brand_bias_summary <- holy_test_data %>%
+  group_by(make) %>%
+  summarise(mean_pct_residual = round(mean(pct_residual, na.rm = TRUE), 2),
+            n = n()) %>%
+  arrange(mean_pct_residual)
+
+# To improve reliability, I exclude brands with fewer than 5 cars in the test set.
+brand_bias_summary <- brand_bias_summary %>% filter(n >= 5)
+
+# I identify the most overpredicted brands (lowest residuals).
+top5_overpredicted <- head(brand_bias_summary, 5)
+
+# And also the most underpredicted brands (highest residuals).
+top5_underpredicted <- tail(brand_bias_summary, 5)
+
+# Show top 5 overpredicted brands in a nice HTML table
+kable(top5_overpredicted, caption = "🔻 Top 5 Overpredicted Brands for Lasso (Model Predicts Too High)", 
+      col.names = c("Brand", "Mean Residual (%)", "Observations")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#F28E2B") %>% 
+  row_spec(1:5, background = "#F9F1E7")
+
+# Show top 5 underpredicted brands in a second table
+kable(top5_underpredicted[order(-top5_underpredicted$mean_pct_residual), ], 
+      caption = "🔺 Top 5 Underpredicted Brands for Lasso (Model Predicts Too Low)", 
+      col.names = c("Brand", "Mean Residual (%)", "Observations")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4C9C88") %>%
+  row_spec(1:5, background = "#E6F8F2")
+
+```
+
+
+```{r}
+# ---------------------------------------------
+# SECTION 4: Residuals + Brand Count by Luxury Level and Brand
+# ---------------------------------------------
+
+# I re-calculate percentage residuals to ensure consistency for downstream use.
+holy_test_data$predicted_lasso <- as.numeric(pred_lasso_actual_test)
+holy_test_data$pct_residual <- (holy_test_data$car_price - holy_test_data$predicted_lasso) / holy_test_data$car_price * 100
+
+# I then summarize the average percentage residual and number of observations per brand in each luxury level.
+residual_summary <- holy_test_data %>%
+  group_by(luxury_level, make) %>%
+  summarise(
+    mean_pct_residual = mean(pct_residual, na.rm = TRUE),
+    brand_count = n()
+  ) %>%
+  arrange(luxury_level, desc(mean_pct_residual))
+
+# Loop through each luxury level again to plot both residual bias and brand sample size
+luxury_levels <- sort(unique(residual_summary$luxury_level))
+
+for (lvl in luxury_levels) {
+  data_subset <- residual_summary %>%
+    filter(luxury_level == lvl) %>%
+    arrange(desc(mean_pct_residual)) %>%
+    mutate(make = factor(make, levels = make))  # Order brands within each plot
+
+  # I match the left and right y-axis scales by computing a ratio for visual alignment
+  max_left <- max(abs(data_subset$mean_pct_residual), na.rm = TRUE)
+  max_right <- max(data_subset$brand_count, na.rm = TRUE)
+  scale_factor <- max_left / max_right
+
+  # I create a dual-axis bar plot showing both residual bias and brand count
+  p <- ggplot(data_subset, aes(x = make)) +
+    geom_bar(aes(y = mean_pct_residual, fill = make), stat = "identity") +
+    geom_segment(aes(
+      x = make, xend = make,
+      y = 0,
+      yend = pmax(0, brand_count * scale_factor)
+    ), color = "black", linewidth = 0.8) +  # Black line shows sample size
+
+    # Add guide lines to help interpret bias
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+    geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+
+    # Configure dual y-axis
+    scale_y_continuous(
+      name = "Mean Percentage Residual",
+      sec.axis = sec_axis(
+        trans = ~ . / scale_factor,
+        name = "Brand Count",
+        breaks = pretty(c(0, max_right))
+      )
+    ) +
+
+    scale_fill_viridis_d(option = "C", begin = 0.1, end = 0.9) +
+    labs(
+      title = paste("Luxury Level", lvl, "- Residual Bias (Bars) + Brand Count (Black Line)\n(Lasso)"),
+      x = "Car Brand"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      axis.title.y.left = element_text(color = "steelblue4"),
+      axis.title.y.right = element_text(color = "black"),
+      legend.position = "none"
+    )
+
+  print(p)
+}
+
+```
+
+```{r}
+# ---------------------------------------------
+# SECTION 5: Residuals + Brand Count by Luxury Level and Brand
+# ---------------------------------------------
+
+# I re-calculate percentage residuals to ensure consistency for downstream use.
+holy_test_data$predicted_lasso <- as.numeric(pred_lasso_actual_test)
+holy_test_data$pct_residual <- (holy_test_data$car_price - holy_test_data$predicted_lasso) / holy_test_data$car_price * 100
+
+# I then summarize the average percentage residual and number of observations per brand in each luxury level.
+residual_summary <- holy_test_data %>%
+  group_by(luxury_level, make) %>%
+  summarise(
+    mean_pct_residual = mean(pct_residual, na.rm = TRUE),
+    brand_count = n()
+  ) %>%
+  arrange(luxury_level, desc(mean_pct_residual))
+
+# Loop through each luxury level again to plot both residual bias and brand sample size
+luxury_levels <- sort(unique(residual_summary$luxury_level))
+
+for (lvl in luxury_levels) 
+  data_subset <- residual_summary %>%
+    filter(luxury_level == lvl) %>%
+    arrange(desc(mean_pct_residual)) %>%
+    mutate(make = factor(make, levels = make))  # Order brands within each plot
+
+  # I match the left and right y-axis scales by computing a ratio for visual alignment
+  max_left <- max(abs(data_subset$mean_pct_residual), na.rm = TRUE)
+  max_right <- max(data_subset$brand_count, na.rm = TRUE)
+  scale_factor <- max_left / max_right
+
+  # I create a dual-axis bar plot showing both residual bias and brand count
+  p <- ggplot(data_subset, aes(x = make)) +
+    geom_bar(aes(y = mean_pct_residual, fill = make), stat = "identity") +
+    geom_segment(aes(
+      x = make, xend = make,
+      y = 0,
+      yend = pmax(0, brand_count * scale_factor)
+    ), color = "black", linewidth = 0.8) +  # Black line shows sample size
+
+    # Add guide lines to help interpret bias
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7)_
+
+```
+
+
+
+```{r}
+# ---------------------------------------------
+# Residual Analysis for Luxury Level 3 (Excluding Chrysler)
+# ---------------------------------------------
+
+# STEP 1: Filter and summarize the data
+lux_3_data <- holy_test_data %>%
+  # I focus only on cars in luxury level 3 and exclude Chrysler (which was an outlier in previous plots).
+  filter(luxury_level == 3, make != "Chrysler") %>%
+  group_by(make) %>%
+  summarise(
+    mean_pct_residual = mean(pct_residual, na.rm = TRUE),  # Average residual error per brand
+    brand_count = n()  # Sample size for each brand
+  ) %>%
+  arrange(desc(mean_pct_residual)) %>%
+  # I reorder brand factor levels so they appear in descending order on the x-axis
+  mutate(make = factor(make, levels = make))
+
+# STEP 2: Calculate scale factor for dual-axis plotting
+# I compute a scaling factor to visually align the left (residuals) and right (brand count) axes.
+max_left <- max(abs(lux_3_data$mean_pct_residual), na.rm = TRUE)
+max_right <- max(lux_3_data$brand_count, na.rm = TRUE)
+scale_factor <- max_left / max_right
+
+# STEP 3: Create the dual-axis bar plot
+ggplot(lux_3_data, aes(x = make)) +
+  
+  # Plot 1: Residual bars for each brand
+  geom_bar(aes(y = mean_pct_residual, fill = make), stat = "identity") +
+
+  # Plot 2: Black lines showing brand sample size (scaled to match left axis)
+  geom_segment(aes(
+    x = make, xend = make,
+    y = 0,
+    yend = pmax(0, brand_count * scale_factor)  # Prevent negative line heights
+  ), color = "black", linewidth = 0.8) +
+
+  # Add reference lines for 0% and ±15% thresholds
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+
+  # Configure dual y-axes: left for residuals, right for brand counts
+  scale_y_continuous(
+    name = "Mean Percentage Residual",
+    sec.axis = sec_axis(
+      trans = ~ . / scale_factor,
+      name = "Brand Count",
+      breaks = pretty(c(0, max_right))  # Automatically generate evenly spaced breaks
+    )
+  ) +
+
+  # Add colors and layout formatting
+  scale_fill_viridis_d(option = "C", begin = 0.1, end = 0.9) +
+  labs(
+    title = "Luxury Level 3 - Residual Bias (Bars) + Brand Count (Black Line) 
+                    (Excluding Chrysler)  (Lasso model)",
+    x = "Car Brand"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),  # Tilt x-axis labels for readability
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.title.y.left = element_text(color = "steelblue4"),
+    axis.title.y.right = element_text(color = "black"),
+    legend.position = "none"  # I hide the fill legend to avoid clutter
+  )
+
+```
+
+```{r}
+# -------------------------------------------------------
+# Residual Analysis by Price Range and Luxury Level (Lasso)
+# -------------------------------------------------------
+
+# STEP 3: Group the data by luxury level and price range, and calculate residual statistics
+residual_summary <- holy_test_data %>%
+  # I first bin car prices into predefined price ranges for easier interpretation
+  mutate(price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) %>%
+  group_by(luxury_level, price_range) %>%
+  summarise(
+    mean_pct_residual = mean(pct_residual, na.rm = TRUE),  # Average prediction error per group
+    brand_count = n()  # Number of observations per price range within each luxury level
+  ) %>%
+  arrange(luxury_level, desc(mean_pct_residual))  # Just to keep things tidy and ordered
+
+# STEP 4: Loop through each luxury level and create visualizations
+luxury_levels <- sort(unique(residual_summary$luxury_level))  # List of unique levels
+
+for (lvl in luxury_levels) {
+  
+  # Filter data to the current luxury level
+  data_subset <- residual_summary %>%
+    filter(luxury_level == lvl) %>%
+    arrange(desc(mean_pct_residual)) %>%
+    mutate(price_range = factor(price_range, levels = price_range))  # Maintain order on x-axis
+
+  # Compute scaling factor for dual y-axes (residuals on left, count on right)
+  max_left <- max(abs(data_subset$mean_pct_residual), na.rm = TRUE)
+  max_right <- max(data_subset$brand_count, na.rm = TRUE)
+  scale_factor <- max_left / max_right  # Helps to align both metrics visually
+
+  # Create dual-axis plot for each luxury level
+  p <- ggplot(data_subset, aes(x = price_range)) +
+    
+    # Plot bars showing mean percentage residuals
+    geom_bar(aes(y = mean_pct_residual, fill = price_range), stat = "identity", alpha = 1) +
+    
+    # Overlay a thin black column for brand counts (scaled to match residuals)
+    geom_col(aes(y = brand_count * scale_factor), fill = "black", width = 0.1) +
+
+    # Add reference lines for interpretability
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +  # Neutral line
+    geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +  # +15% warning line
+    geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +  # -15% warning line
+
+    # Set up dual y-axes: primary for residuals, secondary for brand counts
+    scale_y_continuous(
+      name = "Mean Percentage Residual",
+      sec.axis = sec_axis(
+        trans = ~ . / scale_factor,
+        name = "Price Range Count",
+        breaks = pretty(c(0, max_right))
+      )
+    ) +
+
+    # Styling and labeling
+    scale_fill_viridis_d(option = "C", begin = 0.1, end = 0.9) +
+    labs(
+      title = paste("Luxury Level", lvl, "- Residual Bias (Bars) + Price Range Count (Black Line)\n(Lasso model)"),
+      x = "Price Range"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      axis.title.y.left = element_text(color = "steelblue4"),
+      axis.title.y.right = element_text(color = "black"),
+      legend.position = "none"
+    )
+
+  # Display the plot
+  print(p)
+}
+
+```
+
+```{r}
+# ---------------------------------------------
+# Visualizing Mean Percentage Residuals by Luxury Level (Lasso)
+# ---------------------------------------------
+
+# STEP 1: Calculate summary statistics by luxury level
+residual_summarylinear <- holy_test_data %>%
+  group_by(luxury_level) %>%
+  summarise(
+    mean_residual = mean(pct_residual, na.rm = TRUE),  # I’m taking the average % residual for each luxury level
+    count = n()  # And keeping track of how many cars are in each level
+  )
+
+# STEP 2: Create a bar plot of mean residuals by luxury level
+ggplot(residual_summarylinear, aes(x = luxury_level, y = mean_residual, fill = luxury_level)) +
+  
+  # Draw bars to show average percentage residuals
+  geom_bar(stat = "identity") +
+  
+  # Overlay the number of cars as labels above each bar
+  geom_text(aes(label = count), vjust = -0.3, size = 3.5) +
+  
+  # Add titles and axis labels
+  labs(
+    title = "Percentage Residuals by Luxury Level (Lasso)", 
+    x = "Luxury Level", 
+    y = "Mean Absolute Residual"
+  ) +
+  
+  # Clean and simple visual styling
+  theme_minimal() +
+  theme(
+    legend.position = "none"  # I’m hiding the legend since the x-axis already tells us the group
+  )
+
+```
+
+```{r}
+# ---------------------------------------------
+# Visualizing Mean Absolute Residuals (Not in %) by Luxury Level (Lasso)
+# ---------------------------------------------
+
+# STEP 1: Compute absolute residuals for each observation
+residual_summarylinear2 <- holy_test_data %>%
+  mutate(abs_residual = car_price - predicted_lasso) %>%  # I calculate the difference between actual and predicted price
+  group_by(luxury_level) %>%
+  summarise(
+    mean_residual = mean(abs_residual, na.rm = TRUE),  # Then I compute the average absolute residual for each luxury level
+    count = n()  # And count how many cars are in each level
+  )
+
+# STEP 2: Visualize these residuals in a bar chart
+ggplot(residual_summarylinear2, aes(x = luxury_level, y = mean_residual, fill = luxury_level)) +
+  
+  # Create bars for average absolute residuals
+  geom_bar(stat = "identity") +
+  
+  # Overlay car counts above the bars
+  geom_text(aes(label = count), vjust = -0.3, size = 3.5) +
+  
+  # Add titles and axis labels
+  labs(
+    title = "Absolute Residuals by Luxury Level (Lasso)", 
+    x = "Luxury Level", 
+    y = "Mean Absolute Residual"
+  ) +
+  
+  # Apply a clean and minimal theme
+  theme_minimal() +
+  theme(
+    legend.position = "none"  # I turn off the legend since the luxury level is already on the x-axis
+  )
+
+```
+
+
+```{r}
+# ---------------------------------------------------------------
+# Visualizing Mean Absolute Residuals by Luxury Level (Excl. Level 5)
+# ---------------------------------------------------------------
+
+# STEP 1: Prepare summary statistics excluding level 5
+residual_summarylinear3 <- holy_test_data %>%
+  filter(luxury_level != 5) %>%  # I exclude luxury level 5 due to its small size or outlier behavior
+  mutate(abs_residual = car_price - predicted_lasso) %>%  # I calculate the absolute residuals
+  group_by(luxury_level) %>%
+  summarise(
+    mean_residual = mean(abs_residual, na.rm = TRUE),  # Compute average residual per level
+    count = n()  # Count how many cars are in each level
+  )
+
+# STEP 2: Create a bar plot for the average residuals
+ggplot(residual_summarylinear3, aes(x = as.factor(luxury_level), y = mean_residual, fill = as.factor(luxury_level))) +
+  
+  # Visualize mean residuals as bars
+  geom_bar(stat = "identity") +
+  
+  # Add the number of cars above each bar
+  geom_text(aes(label = count), vjust = -0.3, size = 3.5) +
+  
+  # Label the plot
+  labs(
+    title = "Absolute Residuals by Luxury Level (Lasso)", 
+    x = "Luxury Level", 
+    y = "Mean Absolute Residual"
+  ) +
+  
+  # Apply a clean and modern look
+  theme_minimal() +
+  theme(
+    legend.position = "none"  # I disable the legend since luxury level is already shown on the x-axis
+  )
+
+```
+
+
