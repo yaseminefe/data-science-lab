@@ -1,0 +1,2925 @@
+---
+title: "Data Science Lab - Group 26A"
+output: html_document
+date: "2025-02-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(readr)        # For fast and efficient reading of CSV and other delimited files
+library(dplyr)        # For data wrangling: filtering, summarizing, mutating, joining, etc.
+library(tidyr)        # For reshaping data, handling missing values, and tidy data principles
+library(tidyverse)    # A meta-package that loads ggplot2, dplyr, tidyr, readr, purrr, stringr, and forcats together
+library(caret)        # For creating train/test splits, model training/tuning, and performance evaluation
+library(glmnet)       # Implements Lasso and Ridge regression (regularized linear models)
+library(ISLR)         # Provides datasets (like `Hitters`) and functions for statistical learning examples
+library(ggplot2)      # For creating elegant and customizable visualizations
+library(stringr)      # For easier and consistent string manipulation functions
+library(forcats)      # For handling categorical (factor) variables, including reordering and lumping
+library(purrr)        # For functional programming: mapping, reducing, and working with lists
+library(randomForest) # For training random forest models (ensemble learning method)
+library(xgboost)      # For high-performance gradient boosting models
+library(nnet)         # For training neural networks and multinomial logistic regression
+library(fastDummies)  # For quickly creating dummy (one-hot encoded) variables
+library(e1071)        # For support vector machines, and utility functions (e.g., confusionMatrix)
+library(FNN)          # For k-nearest neighbors (k-NN) models
+library(knitr)        # For dynamic report generation and nicely formatted tables in R Markdown
+library(data.table)   # For fast data manipulation with large datasets
+library(sjPlot)       # For creating publication-ready tables and visualizations from regression models
+library(kableExtra)   # For creating professional looking output tables
+
+
+# set the seed to ensure reproducability
+set.seed(5462)
+
+
+
+
+
+```
+
+
+## Cleaning the Data
+
+```{r message=FALSE, warning=FALSE}
+
+all_car_adverts <- read_csv("all_car_adverts.csv", 
+col_types = cols(car_price = col_number(), 
+car_seller_rating = col_number(), miles = col_number(), year= col_number()))
+
+# Convert PS to BHP where needed (only modify engine_size when the unit is "ps")
+all_car_adverts$engine_size <- ifelse(
+  all_car_adverts$engine_size_unit == "ps", 
+  all_car_adverts$engine_size * 0.98632,  # Convert only PS values
+  all_car_adverts$engine_size  # Keep BHP values unchanged
+)
+all_car_adverts$engine_size_unit[all_car_adverts$engine_size_unit == "ps"] <- "bhp"
+all_car_adverts$reg <- gsub(" reg", "", all_car_adverts$reg)
+
+all_car_adverts <- all_car_adverts %>%
+  mutate(luxury_level = case_when(
+    # Super Luxury (5)
+    make %in% c("Aston Martin", "Bentley", "Ferrari", "Lamborghini", "Maserati", "McLaren", "Rolls-Royce") ~ 5,
+    
+    # Luxury (4)
+    make %in% c("Alfa Romeo", "Audi", "BMW", "Cadillac", "Jaguar", "Land Rover", "Lexus", "Mercedes-Benz", "Porsche", "Volvo") ~ 4,
+    
+    # Upper Mid-range (3)
+    make %in% c("Abarth", "Chrysler", "Cupra", "Dodge", "DS AUTOMOBILES", "Infiniti", "Lotus", "MINI", "Morgan", "Peugeot", "Volkswagen") ~ 3,
+    
+    # Mid-range (2)
+    make %in% c("Chevrolet", "Citroen", "Fiat", "Ford", "Honda", "Hummer", "Hyundai", "Jeep", "Kia", "Mazda", "Nissan", "Renault", "SEAT", "SKODA", "Subaru", "Toyota", "Vauxhall") ~ 2,
+    
+    # Economic (1)
+    make %in% c("Aixam", "Austin", "Caterham", "Dacia", "Daewoo", "Daihatsu", "Daimler", "Isuzu", "Lancia", "London Taxis International", "MG", "Mitsubishi", "Perodua", "Proton", "Rover", "Saab", "Smart", "Ssangyong", "Suzuki", "TVR") ~ 1
+  ))
+
+
+
+#Remove columns that do not contain explanatory information
+all_car_adverts <- all_car_adverts %>% select(-c(car_badges, car_specs, brand_new, discounted, car_attention_grabber,car_sub_title, car_seller, car_seller_location,...1, engine_size_unit, car_title, reg))
+all_car_adverts <- na.omit(all_car_adverts)
+all_car_adverts <- all_car_adverts %>%
+  rename(fuel_type = feul_type)
+
+
+
+# Convert categorical variables to factors
+factor_cols <- names(Filter(is.character, all_car_adverts))
+all_car_adverts[factor_cols] <- lapply(all_car_adverts[factor_cols], as.factor)
+
+# Handle zero values in `car_price` to prevent log(0) issues
+all_car_adverts <- all_car_adverts %>% filter(car_price > 0)
+
+# Apply log transformation to car_price
+all_car_adverts <- all_car_adverts %>% mutate(log_price = log(car_price))
+
+
+```
+
+## Classification using AI:
+# Prompt:
+Classify the following car brands into five luxury levels from 1 (Economic) to 5 (Super Luxury).
+
+The classification should always be consistent with the given reference.
+Use the following criteria:
+5 - Super Luxury: Exclusive luxury and exotic brands (ultra-high price, exclusivity).
+4 - Luxury: Premium brands offering high-end luxury models.
+3 - Upper Mid-range: Brands with some luxury or premium models.
+2 - Mid-range: Popular mainstream brands with mass-market appeal.
+1 - Economic: Entry-level or budget-friendly manufacturers.
+
+Instructions:
+
+If a brand is not listed, classify it by similarity to listed brands, but prioritize sticking to the above reference.
+Output the classification as a table with two columns: Brand and Luxury Level (1-5).
+Ensure reproducibility by not altering the categories in future runs.
+
+Car Brands: 
+Aston Martin, Bentley, Ferrari, Lamborghini, Maserati, McLaren, Rolls-Royce
+Alfa Romeo, Audi, BMW, Cadillac, Jaguar, Land Rover, Lexus, Mercedes-Benz, Porsche, Volvo
+Abarth, Chrysler, Cupra, Dodge, DS AUTOMOBILES, Infiniti, Lotus, MINI, Morgan, Peugeot, Volkswagen
+Chevrolet, Citroen, Fiat, Ford, Honda, Hummer, Hyundai, Jeep, Kia, Mazda, Nissan, Renault, SEAT, SKODA, Subaru, Toyota, Vauxhall
+Aixam, Austin, Caterham, Dacia, Daewoo, Daihatsu, Daimler, Isuzu, Lancia, London Taxis International, MG, Mitsubishi, Perodua, Proton, Rover, Saab, Smart, Ssangyong, Suzuki, TVR
+
+
+## Setting up the first data partition for a holy test set and the rest, with which we will train different models with training and validation sets. 
+
+```{r}
+
+
+#We set aside 10% of the data as a holdout set, the remaining 90% is used to construct training and validation sets per model.
+#The holdout set is then used to predict the trained model and compute the test statistics. 
+
+test_index <- sample(seq_len(nrow(all_car_adverts)), size = 0.10 * nrow(all_car_adverts))
+
+final_test_set <- all_car_adverts[test_index, ] #The holdout set
+remaining_data <- all_car_adverts[-test_index, ]  #The training/validation data
+
+
+
+```
+
+
+
+# Random forest model
+
+
+```{r}
+
+# Prepare the training data for Random Forest
+
+forestdata <- remaining_data %>%
+   mutate(make = fct_lump(make, n = 46)) %>%  # Keep only the 46 most frequent brands
+   sample_n(30000) %>%  # Take a random sample of 30,000 rows
+   mutate(across(where(is.character), as.factor)) %>%  # Convert character columns to factors
+   select(-log_price, -model, -variant, -luxury_level)  # Remove problematic variables
+
+# Prepare the holdout set for Random Forest, and only include brands that are also in the training data
+final_test_setRF <- final_test_set %>%
+   mutate(make = fct_lump(make, n = 46)) %>% # Keep only the 46 most frequent brands
+   filter(make %in% levels(forestdata$make)) %>%  # Keep only brands present in the training data
+   mutate(make = factor(make, levels = levels(forestdata$make))) %>%  # Match factor levels with the training data
+   select(-log_price, -model, -variant, -luxury_level)  # Remove problematic variables
+
+# Define mtry values to test
+mtry_valuesRF <- c(3, 6, 9, 12)
+
+# Store models and results
+rf_models <- list()
+resultsRF <- data.frame(mtry = numeric(), MSE = numeric(), R2 = numeric())
+
+```
+
+```{r}
+
+#Warning: This chunk takes approximately 2 hours to compute
+
+
+# Loop through different mtry values for the Random Forest
+
+for (m in mtry_valuesRF) {
+  # Train Random Forest model
+  rf_model <- randomForest(
+    car_price ~ .,  
+    data = forestdata,  
+    mtry = m,  
+    ntree = 300  # Number of trees
+  )
+
+  # Store the trained model
+  rf_models[[paste0("mtry_", m)]] <- rf_model
+
+  # Predict on final test set
+  rf_preds <- predict(rf_model, newdata = final_test_setRF)
+
+  # Calculate MSE and R²
+  mse <- mean((final_test_setRF$car_price - rf_preds)^2)
+  r2 <- cor(final_test_setRF$car_price, rf_preds)^2
+
+  # Store results
+  resultsRF <- rbind(resultsRF, data.frame(mtry = m, MSE = mse, R2 = r2))
+}
+
+# Print results
+print(resultsRF)
+
+```
+
+
+
+
+```{r}
+
+# Because some rows were excluded by the Random Forest, for consistency these rows will also be excluded from the other test sets 
+
+excluded_rows <- final_test_set %>%
+  filter(!(make %in% final_test_setRF$make))  # Select rows where 'make' is not in training data
+
+
+#The following line of dplyr code will be applied to the preparation of each test set:
+
+#filter(!(make %in% excluded_rows$make))
+
+```
+
+
+```{r}
+
+
+#Train the final Random Forest model using a larger sample and the found optimal hyperparameters
+
+forestdata2 <- remaining_data %>%
+   mutate(make = fct_lump(make, n = 46)) %>%  # Keep the 46 most frequent brands
+   sample_n(80000) %>%  # Take a random sample of 80,000 rows
+   mutate(across(where(is.character), as.factor)) %>%  # Convert character columns to factors
+   select(-log_price, -model, -variant, -luxury_level)  # Remove irrelevant columns
+
+rf_modeloob <- randomForest(
+  car_price ~ .,        # Formula: Predict car_price using all other variables
+  data = forestdata2,   # Training dataset
+  ntree = 300,          # Number of trees
+  mtry = 6,             # Number of predictors randomly selected at each split
+  importance = TRUE,    # Compute variable importance
+  keep.forest = TRUE,   # Keep the forest for predictions
+  keep.inbag = TRUE     # Keep track of OOB samples
+)
+
+# Print the model to view the OOB error rate
+print(rf_modeloob)
+
+# Plot the OOB Error vs Number of Trees
+plot(rf_modeloob, main = "OOB Error vs Number of Trees")
+
+
+```
+
+As the MSE does not decrease much after 6, we will use 6. 
+
+```{r}
+
+# Plot variable importance for the final Random Forest model
+varImpPlot(rf_modeloob, main = "Variable Importance (mtry = 6)")
+
+
+```
+
+```{r}
+
+#Construct a second test set for the final Random Forest model
+
+final_test_setRF2 <- final_test_set %>%
+   mutate(make = fct_lump(make, n = 46)) %>% 
+   filter(make %in% levels(forestdata2$make)) %>%  # Keep only brands present in the training data
+   mutate(make = factor(make, levels = levels(forestdata2$make))) %>%  # Match factor levels with the training data
+   select(-log_price, -model, -variant, -luxury_level)  # Remove irrelevant columns
+
+
+# Predict the final model on the 3holdout set
+rf_preds <- predict(rf_modeloob, newdata = final_test_setRF2)
+
+
+#And calculate the test statistics using postResample
+rf_metrics <- postResample(rf_preds, final_test_setRF2$car_price)
+
+```
+
+
+
+
+
+# Neural network model
+
+
+
+```{r}
+
+#Preparing the datasets for the Neural Network 
+
+# Training data preparation
+nndatatrain <- remaining_data %>%
+  mutate(make = fct_lump(make, n = 46)) %>%  # Keep the 46 most frequent brands
+  sample_n(90000) %>%  # Sample 90,000 rows randomly
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns first
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) %>%
+  mutate(across(where(is.numeric) & !where(~ all(. %in% c(0, 1))), scale))  # Scale numeric variables
+
+
+# Test data preparation
+nndatatest <- final_test_set %>%
+  filter(!(make %in% excluded_rows$make)) %>%  # Remove missing rows from other the Random Forest for consistency
+  mutate(make = fct_lump(make, n = 46)) %>%  # Keep the 46 most frequent brands
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) %>%
+  mutate(across(where(is.numeric) & !where(~ all(. %in% c(0, 1))), scale))  # Scale numeric variables
+
+
+
+```
+
+
+See which amount of layers is best for neural network:
+
+```{r}
+
+#This code chunk takes a long time to run, approximately two hours
+
+
+# 5-fold cross-validation setup
+train_control <- trainControl(method = "cv", number = 5)  # 5-fold CV
+
+# Train the model while tuning number of hidden layers (decay is fixed at 0.01)
+nn_tuned <- train(
+  car_price ~ ., 
+  data = nndatatrain,  
+  method = "nnet",
+  trControl = train_control,  
+  tuneGrid = expand.grid(size = c(3, 6, 9), decay = 0.01),  # Tuning size only, decay fixed at 0.01
+  linout = TRUE,
+  maxit = 500
+)
+
+# View results
+print(nn_tuned)
+
+# Visualize the effect of different hidden layer sizes
+plot(nn_tuned)
+
+```
+
+
+
+
+
+```{r}
+
+# Running the final Neural Network model, with 6 hidden layers
+
+# Take a larger sample for maximum reliability
+
+nndatatrain <- remaining_data %>%
+  mutate(make = fct_lump(make, n = 46)) %>%  # Keep the 46 most frequent brands
+  sample_n(200000) %>%  # Sample 200,000 rows randomly
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns first
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) %>%
+  mutate(across(where(is.numeric) & !where(~ all(. %in% c(0, 1))), scale))  # Scale numeric variables
+
+
+cv_control <- trainControl(method = "cv", number = 5)  
+
+# Train the neural network model using cross-validation
+nn_model_cv <- train(
+  car_price ~ ., 
+  data = nndatatrain, 
+  method = "nnet",
+  trControl = cv_control,
+  tuneGrid = expand.grid(size = 6, decay = 0.01),  # Hyperparameter tuning
+  maxit = 500,  # Number of iterations
+  linout = TRUE
+)
+
+```
+
+```{r}
+
+#Construct a second holdout set for the final NN model
+
+nndatatest2 <- final_test_set %>%
+  filter(!(make %in% excluded_rows$make)) %>%  # Remove missing rows from other the Random Forest for ease of comparison
+  mutate(make = fct_lump(make, n = 46)) %>%  # Keep the 46 most frequent brands
+  select(-model, -variant, -log_price, -luxury_level)  # Remove unwanted columns
+
+# Reverse scaling for predicted prices  
+predicted_pricesNN <- predict(nn_model_cv, nndatatest) %>% 
+  as.vector() * sd(remaining_data$car_price, na.rm = TRUE) + mean(remaining_data$car_price, na.rm = TRUE)
+
+# Retrieving the actual prices
+actual_pricesNN <- nndatatest2$car_price 
+
+# Calculate the test statistics
+nn_metrics <- postResample(predicted_pricesNN, actual_pricesNN)
+
+
+```
+
+
+# Extreme gradient boosting
+
+
+```{r}
+
+
+#For Extreme gradient boosting, we also need to transform factors to dummies and scale 
+
+# Modify the training dataset
+xgbdatatrain <- remaining_data %>%
+  mutate(make = fct_lump(make, n = 46)) %>%  # Keep only the top 46 most frequent brands
+  sample_n(90000) %>%  # Sample 90,000 rows randomly
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE,  # Remove the first dummy column for each factor
+             remove_selected_columns = TRUE)  # Remove the original factor columns
+
+
+
+# Modify the test dataset (same operation for the test set)
+xgbdatatest <- final_test_set %>%
+  filter(!(make %in% excluded_rows$make)) %>%  # Remove missing rows from the test set
+  mutate(make = fct_lump(make, n = 46)) %>%  # Keep only the top 46 most frequent brands
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE)  # One-hot encode factor columns
+
+
+  
+```
+
+```{r}
+
+
+# Convert training and test sets to XGBoost DMatrix
+
+xgbdatatrainmatrix <- xgbdatatrain %>%
+  select(-car_price) %>%
+  as.matrix() %>%
+  xgb.DMatrix(label = xgbdatatrain$car_price)
+
+xgbdatatestmatrix <- xgbdatatest %>%
+  select(-car_price) %>%
+  as.matrix() %>%
+  xgb.DMatrix(label = xgbdatatest$car_price)
+
+```
+
+
+
+
+
+
+```{r}
+
+#Tuning the XGBoost model on tree depth and subsampling per tree
+
+#This chunk takes about an hour to compute
+
+
+# Define XGBoost parameters with fixed values for the other hyperparameters
+params <- list(
+  objective = "reg:squarederror",  # Use squared error for regression
+  eval_metric = "rmse",            # Root Mean Squared Error as evaluation metric
+  eta = 0.1,                       # Learning rate (fixed)
+  min_child_weight = 1,            # Minimum child weight (fixed)
+  subsample = 1                    # Subsample (fixed to 1, using all data)
+)
+
+# Set a grid for hyperparameter tuning (only max_depth and colsample_bytree)
+tune_grid <- expand.grid(
+  max_depth = c(3, 6, 9),           # Tune tree depth
+  colsample_bytree = c(0.6, 0.8, 1) # Tune feature subsampling per tree (analogous to mtry)
+)
+
+# Initialize results list to store cross-validation results
+cv_results_list <- list()
+
+# Loop through different combinations of max_depth and colsample_bytree for cross-validation
+for (i in 1:nrow(tune_grid)) {
+  params_i <- params
+  params_i$max_depth <- tune_grid$max_depth[i]
+  params_i$colsample_bytree <- tune_grid$colsample_bytree[i]
+
+  # Perform 5-fold Cross-Validation
+  cv_results <- xgb.cv(
+    params = params_i,
+    data = xgbdatatrainmatrix,  # Use the pre-processed training matrix
+    nrounds = 500,              # Maximum boosting rounds
+    nfold = 5,                  # 5-fold cross-validation
+    stratified = FALSE,         # Not needed for regression
+    verbose = TRUE,
+    early_stopping_rounds = 10  # Stop if no improvement after 10 rounds
+  )
+
+  # Store the results for each parameter combination
+  cv_results_list[[i]] <- cv_results
+  print(paste("Finished CV for max_depth =", tune_grid$max_depth[i],
+              ", colsample_bytree =", tune_grid$colsample_bytree[i]))
+}
+
+
+```
+
+
+```{r}
+
+# Extract best RMSE and corresponding round from each run of XGBoost
+cv_summary <- data.frame(
+  max_depth = tune_grid$max_depth,
+  colsample_bytree = tune_grid$colsample_bytree,
+  best_iteration = sapply(cv_results_list, function(x) x$best_iteration),
+  best_rmse = sapply(cv_results_list, function(x) min(x$evaluation_log$test_rmse_mean))
+)
+
+# View all results sorted by RMSE
+cv_summary <- cv_summary %>% arrange(best_rmse)
+
+# Print best hyperparameter combo
+print(cv_summary[1, ])  # Best row
+
+```
+
+
+
+
+
+```{r}
+
+
+
+# Modify the training dataset to include a larger sample of 200.000
+
+
+xgbdatatrain2 <- remaining_data %>%
+  mutate(make = fct_lump(make, n = 46)) %>%  # Keep only the top 46 most frequent brands
+  sample_n(200000) %>%  # Sample 200.000 rows randomly
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE,  # Remove the first dummy column for each factor
+             remove_selected_columns = TRUE)  # Remove the original factor columns
+
+# Convert to xgb.DMatrix
+
+xgbdatatrainmatrix2 <- xgbdatatrain2 %>%
+  select(-car_price) %>%
+  as.matrix() %>%
+  xgb.DMatrix(label = xgbdatatrain2$car_price)
+
+
+
+#Train the final model using the optimal hyperparameters
+
+xgb_modelfin <- xgb.train(
+  params = list(
+    max_depth = 9,                   # Maximum depth of trees to 9
+    colsample_bytree = 0.8             # Use 0.8 of features for each tree
+  ),
+  data = xgbdatatrainmatrix2,
+  nrounds = 500            
+)
+
+
+```
+
+
+
+```{r}
+
+
+
+# Reproducing the holdout set including car price, so it can be extracted to compute the test statistics
+
+xgbdatatest2 <- final_test_set %>%
+  filter(!(make %in% excluded_rows$make)) %>%  # Remove missing rows from the test set
+  mutate(make = fct_lump(make, n = 46))  # Keep only the top 46 most frequent brands
+
+
+#Predict the results of the final model on the holdout set
+
+predxgb <- predict(xgb_modelfin, xgbdatatestmatrix)
+
+# # Ensure predictions are numeric
+
+predxgb <- as.numeric(predxgb)  
+
+# Calculate the test statistics
+
+xgb_metrics <- postResample(predxgb, xgbdatatest2$car_price)
+
+
+```
+
+
+```{r}
+
+#Construct the variable importance
+xgbimportance <- xgb.importance(feature_names = colnames(xgbdatatrainmatrix2), model = xgb_modelfin)
+
+# Plot the variable importance
+xgb.plot.importance(importance_matrix = xgbimportance)
+
+```
+
+
+
+
+# KNN 
+
+
+```{r}
+
+knndatatrain <- remaining_data %>%
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns first #Also luxury level
+  mutate(make = fct_lump(make, n = 46)) %>%  # Keep only the top 46 most frequent brands
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) %>%
+             sample_n(70000) %>%   # Sample to make calculation possible 
+  mutate(across(where(is.numeric) & !where(~ all(. %in% c(0, 1))), scale))
+
+knndatatest <- final_test_set %>%
+  select(-model, -variant, -log_price, -luxury_level) %>%  # Remove unwanted columns first #Also luxury level
+  mutate(make = fct_lump(make, n = 46)) %>%  # Keep only the top 46 most frequent brands
+  dummy_cols(select_columns = names(select(., where(is.factor))), 
+             remove_first_dummy = TRUE, 
+             remove_selected_columns = TRUE) %>%
+  mutate(across(where(is.numeric) & !where(~ all(. %in% c(0, 1))), scale)) 
+
+```
+
+
+
+
+```{r}
+
+# This chunk takes about an hour to compute
+
+train_control <- trainControl(method = "cv", number = 5)
+
+# Hyperparameter grid for tuning k-NN (only varying 'k')
+tune_grid <- expand.grid(k = c(3, 5, 7, 9))  # Number of neighbors to try
+
+# Train the k-NN model with hyperparameter tuning and 5-fold cross-validation
+knn_model_cv <- train(
+  car_price ~ ., 
+  data = knndatatrain,   # Replace with your training data
+  method = "knn",        # Specify k-NN model
+  trControl = train_control,  # Cross-validation settings
+  tuneGrid = tune_grid    # Grid of hyperparameters to try (only 'k')
+)
+
+# View the results
+print(knn_model_cv)
+
+```
+
+
+```{r}
+
+
+#Predict the prices
+
+knn_pred <- predict(knn_model_cv, newdata = knndatatest) 
+
+
+# Reverse scaling for predicted prices  
+predicted_pricesknn <- knn_pred * sd(remaining_data$car_price, na.rm = TRUE) + mean(remaining_data$car_price, na.rm = TRUE)
+
+
+# Test statistics for KNN
+knn_metrics <- postResample(predicted_pricesknn, final_test_set$car_price)
+
+
+
+```
+
+
+
+
+
+
+```{r}
+
+# Construct a data frame containing the non-linear test statistics
+
+# Scaling the R^2 values so they can be displayed in the plot
+
+results_dfnonlinear <- data.frame(
+  Model = rep(c("Random Forest", "XGBoost", "KNN", 'NN'), each = 2),
+  Metric = rep(c("RMSE", "R²"), times = 4),
+  Value = c(rf_metrics["RMSE"], 5000 * rf_metrics["Rsquared"], 
+            xgb_metrics["RMSE"], 5000 * xgb_metrics["Rsquared"],
+            knn_metrics["RMSE"], 5000 * knn_metrics["Rsquared"],
+            nn_metrics["RMSE"], 5000 * nn_metrics["Rsquared"])
+)
+
+
+
+#Creating the plot
+
+ggplot(results_dfnonlinear, aes(x = Model)) +
+  geom_bar(aes(y = Value, fill = Metric), stat = "identity", 
+           position = position_dodge(width = 0.8), width = 0.6) +
+  scale_y_continuous(
+    name = "RMSE",  # Left y-axis
+    breaks = seq(0, 5000, by = 500),  # Add more grid lines by increasing break granularity
+    sec.axis = sec_axis(~ . / 5000, name = "R²", breaks = seq(0, 1, by = 0.05))
+  ) +
+  labs(title = "Non-linear Model Performance Comparison", x = "Model") +
+  theme_light(base_size = 14) +
+  theme(
+  panel.grid.major.y = element_line(color = "#D3D3D3", size = 0.5),
+  panel.grid.minor.y = element_line(color = "#EAEAEA", size = 0.25),
+  axis.title.y.right = element_text(color = "purple", size = 14), 
+  axis.text.y.right = element_text(color = "purple", size = 10),  # smaller tick text
+  axis.title.y.left = element_text(color = "orange", size = 14),
+  axis.text.y.left = element_text(color = "orange", size = 10),   # smaller tick text
+  axis.title.x = element_text(size = 14), 
+  axis.text.x = element_text(size = 12),
+  plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+  legend.position = "top"
+) +
+  scale_fill_manual(values = c("RMSE" = "orange", "R²" = "purple"))
+
+```
+
+
+
+```{r}
+
+
+# Create a readable, wide-format version of the nonlinear results
+
+# Re-scaling the R^2 values, and rounding them
+
+results_table_nonlinear <- results_dfnonlinear %>%
+  mutate(
+    Value = ifelse(Metric == "R²", round(Value / 5000, 3), round(Value, 1))
+  ) %>%
+  pivot_wider(names_from = Metric, values_from = Value) %>%
+  select(Model, RMSE, `R²`)
+
+# Styled table output
+results_table_nonlinear %>%
+  kable("html", caption = "Non-linear Model Performance (RMSE and R²)", align = "lcc") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, color = "white", background = "steelblue3")
+
+```
+
+
+
+
+
+
+
+```{r}
+
+
+#Having chosen XGBoost as the best model, use its predicted values of the test set to construct residuals
+
+#First investigate the absolute residuals
+
+
+# Calculate the absolute residuals 
+comparisonsetnonlinear <- xgbdatatest2 %>%
+  mutate(predxgb = predxgb) %>%
+  mutate(residualxgbabs = car_price - predxgb)  # Residual in absolute terms
+
+# Calculate the mean absolute residual and count by luxury level
+residual_summarynonlinear <- comparisonsetnonlinear %>%
+  group_by(luxury_level) %>%
+  summarise(
+    mean_residual = mean(residualxgbabs, na.rm = TRUE),
+    count = n()
+  )
+
+# Make the bar plot with counts
+ggplot(residual_summarynonlinear, aes(x = luxury_level, y = mean_residual, fill = luxury_level)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = count), vjust = +1.3, size = 3.5) +  # Add counts above bars
+  labs(title = "Absolute Residuals by Luxury Level (XGBoost)", 
+       x = "Luxury Level", 
+       y = "Mean Absolute Residual") +
+  theme_minimal() +
+  theme(legend.position = "none")  # Hide legend as x-axis already shows categories
+
+
+
+```
+
+
+
+```{r}
+
+
+#Next, calculate the percentage residuals using predicted values with XGBoost
+
+# Calculate the residuals as a percentage of the car_price
+comparisonsetnonlinear <- xgbdatatest2 %>%
+  mutate(predxgb = predxgb) %>%
+  mutate(residualxgbpct = (car_price - predxgb) / car_price * 100)  # Residual in percentage terms
+
+# Calculate the mean residual and count by luxury level
+residual_summarynonlinear <- comparisonsetnonlinear %>%
+  group_by(luxury_level) %>%
+  summarise(
+    mean_residual = mean(residualxgbpct, na.rm = TRUE),
+    count = n()
+  )
+
+# Make the bar plot with counts
+ggplot(residual_summarynonlinear, aes(x = luxury_level, y = mean_residual, fill = luxury_level)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = count), vjust = +1.3, size = 3.5) +  # Add counts above bars
+  labs(title = "Percentage Residuals by Luxury Level (XGBoost)", 
+       x = "Luxury Level", 
+       y = "Mean Residual Price in Percentage Terms") +
+  theme_minimal() +
+  theme(legend.position = "none")  # Hide legend as x-axis already shows categories
+
+
+
+```
+
+
+
+
+
+
+
+```{r}
+
+#Construct a plot showing the mean percentage residual per brand, for each of the 5 luxury levels 
+
+
+# Get unique luxury levels
+luxury_levels <- unique(comparisonsetnonlinear$luxury_level)
+
+# Loop through each luxury level
+for (lux in luxury_levels) {
+  
+  # Compute mean residual per brand
+  luxury_residuals <- comparisonsetnonlinear %>%
+    filter(luxury_level == lux) %>%
+    group_by(make) %>%
+    summarise(mean_residual = mean(residualxgbpct, na.rm = TRUE),
+              count = n())  # Count occurrences of each brand
+
+  # Create the plot with dual y-axes
+  plot <- ggplot(luxury_residuals, aes(x = reorder(make, mean_residual))) +
+    geom_bar(aes(y = mean_residual, fill = make), stat = "identity", alpha = 0.7) +  # Residual bars
+    geom_col(aes(y = count * (max(mean_residual) / max(count))), 
+             fill = "black", width = 0.1) +  # Thin black bars for frequency# Frequency line (scaled)
+    scale_y_continuous(
+      name = "Mean Percentage Residual (in coloured bars)",  # Left axis label
+      sec.axis = sec_axis(~ . * (max(luxury_residuals$count) / max(luxury_residuals$mean_residual)), 
+                          name = "Brand Count (in black lines)")  # Right axis label
+    ) +
+    labs(title = paste("Mean Percentage Residuals & Brand Frequency for Luxury Level", lux, 
+                           "(XGBoost)"),
+         x = "Brand") +
+    theme_minimal() +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for readability
+  
+  # Print the plot
+  print(plot)
+}
+
+
+```
+
+
+```{r}
+
+# For luxury level 3, a large residual is noted for Chrysler, which is excluded in this chunk. 
+
+#Construct the graph for the brands in luxury level 3 without Chrysler
+
+
+ggplot(comparisonsetnonlinear %>%
+         filter(luxury_level == 3, make != "Chrysler") %>% #Exclude Chrysler
+         group_by(make) %>%
+         summarise(mean_residual = mean(residualxgbpct, na.rm = TRUE),
+                   count = n()), 
+       aes(x = reorder(make, mean_residual))) +
+  geom_bar(aes(y = mean_residual, fill = make), stat = "identity", alpha = 0.7) +  # Residual bars
+  geom_col(aes(y = count * (max(mean_residual) / max(count))), 
+           fill = "black", width = 0.1) +  # Thin black bars for frequency
+  scale_y_continuous(
+    name = "Mean Percentage Residual (in coloured bars)",  # Left axis label
+    sec.axis = sec_axis(~ . * (max(
+      comparisonsetnonlinear %>%
+        filter(luxury_level == 3, make != "Chrysler") %>%   
+        group_by(make) %>%
+        summarise(count = n()) %>%
+        pull(count)
+    ) / max(
+      comparisonsetnonlinear %>%
+        filter(luxury_level == 3, make != "Chrysler") %>%
+        group_by(make) %>%
+        summarise(mean_residual = mean(residualxgbpct, na.rm = TRUE)) %>%
+        pull(mean_residual)
+    )), name = "Brand Count (in black lines)")  # Right axis label
+  ) +
+  labs(title = "Mean Percentage Residuals & Brand Frequency for Luxury Level 3 
+                                  (Without Chrysler) (XGBoost)",
+       x = "Brand") +
+  theme_minimal() +
+  
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for readability
+
+
+```
+
+
+
+```{r}
+
+
+#Investigate the average residuals by price category for each luxury level (instead of per brand)
+
+
+# Define price ranges
+price_bins <- c(0, 5000, 10000, 25000, 50000, 150000, 300000, Inf)
+price_labels <- c("0-5k", "5-10k", "10-25k", "25-50k", "50-150k", "150-300k", "300k+")
+
+# Get unique luxury levels
+luxury_levels <- unique(comparisonsetnonlinear$luxury_level)
+
+# Loop through each luxury level
+for (lux in luxury_levels) {
+  
+  # Create price ranges
+  luxury_residuals <- comparisonsetnonlinear %>%
+    filter(luxury_level == lux) %>%
+    mutate(price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) %>%
+    group_by(price_range) %>%
+    summarise(mean_residual = mean(residualxgbpct, na.rm = TRUE),
+              count = n())  # Count occurrences in each price range
+
+  # Create the plot with dual y-axes
+  plot <- ggplot(luxury_residuals, aes(x = reorder(price_range, mean_residual))) +
+    geom_bar(aes(y = mean_residual, fill = price_range), stat = "identity", alpha = 0.7) +  # Residual bars
+    geom_col(aes(y = count * (max(mean_residual) / max(count))), 
+             fill = "black", width = 0.1) +  # Thin black bars for frequency
+    scale_y_continuous(
+      name = "Mean Percentage Residual (in coloured bars)",  # Left axis label
+      sec.axis = sec_axis(~ . * (max(luxury_residuals$count) / max(luxury_residuals$mean_residual)), 
+                          name = "Price Range Count (in black lines)")  # Right axis label
+    ) +
+    labs(title = paste("Mean Percentage Residuals & Brand Frequency for Luxury Level" , 
+                       lux,  "(XGBoost)"),
+         x = "Price Range") +
+    theme_minimal() +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 45, hjust = 1)) + # Rotate x-axis labels for readability
+  
+   # Horizontal zero line
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+    geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) 
+  
+  # Print the plot
+  print(plot)
+}
+
+```
+
+
+
+
+
+LINEAR METHODS - Yasemin Efe
+
+# Correlation heatmap raw
+
+```{r}
+
+# First, I selected only the numeric columns from the dataset 
+# so I can compute meaningful pairwise correlations
+all_car_adverts_num <- all_car_adverts %>% select_if(is.numeric)
+
+# Then I calculated the correlation matrix, using pairwise.complete.obs 
+# to handle missing data without biasing the results
+cor_matrix <- cor(all_car_adverts_num, use = "pairwise.complete.obs")
+
+# To visualize the correlation structure, I reshaped the matrix to long format
+cor_melted <- melt(cor_matrix)
+
+# I used a heatmap to explore linear associations among numeric variables
+# Blue = negative correlation, Red = positive
+ggplot(cor_melted, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Correlation Heatmap (Numerical Variables Only)", fill = "Correlation")
+
+```
+
+
+
+# Correlation Heatmap Filtered
+
+```{r}
+# Here, I removed columns with zero variance since they provide no predictive value
+all_car_adverts_num <- all_car_adverts_num %>%
+  select(where(~ var(.) > 0))
+
+# I recomputed the correlation matrix with filtered variables
+cor_matrix <- cor(all_car_adverts_num, use = "pairwise.complete.obs")
+
+# To avoid gray boxes in the heatmap, I removed rows/columns with NA values
+cor_matrix <- cor_matrix[complete.cases(cor_matrix), complete.cases(cor_matrix)]
+
+# I kept only variables with moderate-to-strong correlation (|r| ≥ 0.1) with car_price
+cor_filtered <- cor_matrix[abs(cor_matrix["car_price", ]) >= 0.1, abs(cor_matrix["car_price", ]) >= 0.1]
+
+# Melted again for heatmap visualization
+cor_melted <- melt(cor_filtered)
+
+# Final refined heatmap to focus on car_price-related variables
+ggplot(cor_melted, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Filtered Correlation Heatmap", fill = "Correlation")
+
+```
+
+
+
+# Pre-Processing the Data for Linear Models
+
+```{r}
+
+# I started by preparing the dataset for linear model training.
+# These columns below didn’t offer much predictive power or were mostly sparse/duplicated,
+# so I decided to remove them to simplify the modeling process.
+
+lineardatatrain <- remaining_data %>%
+  select(-c(
+    full_dealership,         # Too sparse; most values are NA or uniform
+    first_year_road_tax,     # Low variance and not very informative
+    part_warranty,           # Often redundant with full_service or part_service
+    part_service,
+    full_service,
+    finance_available        # Usually not known at prediction time
+  ))
+
+# I applied the same column exclusions to the holy test set
+# to ensure consistency in structure between training and evaluation data.
+
+holy_test_data <- final_test_set %>%
+  select(-c(
+    full_dealership,
+    first_year_road_tax,
+    part_warranty,
+    part_service,
+    full_service,
+    finance_available
+  ))
+
+```
+
+
+
+# Selecting Only The Most Occurring Brands
+
+```{r}
+
+# Selecting Only The Most Occurring Brands
+
+# I started by counting how many times each car brand appears in the training dataset.
+brand_counts <- table(lineardatatrain$make)
+
+# Then I converted the result to a data frame and sorted it in descending order of frequency.
+brand_counts_df <- as.data.frame(brand_counts) %>%
+  arrange(desc(Freq))
+
+# After some trial and error, I found that including the top 46 brands gave the best trade-off.
+# This was the highest number of brands that consistently worked across all models without issues.
+# Brands beyond the 46th were extremely rare, and keeping them often led to instability or poor performance.
+top_46_brands <- brand_counts_df$Var1[1:46]
+
+# I filtered both the training and holy test sets to keep only those most frequent brands.
+# This keeps the datasets aligned and avoids introducing noise from underrepresented categories.
+lineardatatrain <- lineardatatrain %>% filter(make %in% top_46_brands)
+holy_test_data  <- holy_test_data %>% filter(make %in% top_46_brands)
+
+```
+
+# Train / Validate / Test: Linear Models
+
+```{r}
+# ----------------------------
+# Sample 200,000 Observations from Trainable Data and Create Train and Validation Data 
+# ----------------------------
+
+# I randomly sampled 200,000 observations from the training dataset without replacement.
+# This helped me control the model runtime and ensured consistency across different model types.
+sampled_datalinear <- lineardatatrain %>%
+  sample_n(200000, replace = FALSE)           
+
+# I then created a 70-30 train-validation split using stratified sampling based on log_price.
+# This helped preserve the distribution of the target variable across both sets.
+train_index <- createDataPartition(sampled_datalinear$log_price, p = 0.7, list = FALSE)
+
+# Here, I split the sampled data into training and validation sets.
+train_data <- sampled_datalinear[train_index, ]
+validation_data <- sampled_datalinear[-train_index, ]
+
+# I then merged the training and validation sets to create a full dataset that I use for cross-validation and final model fitting.
+train_val_data <- bind_rows(train_data, validation_data)
+
+# For cross-validation, I set up a 5-fold CV strategy to ensure more stable performance estimates across all linear models.
+cv_control <- trainControl(method = "cv", number = 5)
+
+```
+
+
+# Simple Linear Regression
+
+```{r}
+# ----------------------------
+# LOG VERSION
+# ----------------------------
+
+# I excluded variables that either contain the outcome (log_price) or are not suitable for modeling, such as identifiers and high-cardinality columns.
+excluded_predictors_log <- c("car_price", "log_price", "model", "variant", "luxury_level")
+predictors_log <- setdiff(names(train_val_data), excluded_predictors_log)
+
+# I constructed the formula for log-transformed car price prediction using all selected predictors.
+lm_formula_log <- as.formula(paste("log_price ~", paste(predictors_log, collapse = " + ")))
+
+# I trained a linear regression model with 5-fold cross-validation to estimate performance on unseen data.
+lm_cv_model_log <- train(
+  lm_formula_log,
+  data = train_val_data,
+  method = "lm",
+  trControl = cv_control
+)
+
+# I computed the average cross-validated MSE and R² to assess performance stability.
+lm_mse_cv_log <- mean(lm_cv_model_log$resample$RMSE^2)
+lm_r2_cv_log  <- mean(lm_cv_model_log$resample$Rsquared)
+
+# Then, I fitted the final model on the full train+validation set to maximize data usage.
+final_lm_model_log <- lm(lm_formula_log, data = train_val_data)
+
+# Using this final model, I predicted log-prices on the untouched holy test set.
+lm_preds_log_holy  <- predict(final_lm_model_log, newdata = holy_test_data)
+
+# Finally, I evaluated model accuracy and explained variance on the test set.
+lm_mse_holy_log  <- mean((holy_test_data$log_price - lm_preds_log_holy)^2)
+lm_r2_holy_log   <- cor(holy_test_data$log_price, lm_preds_log_holy)^2
+
+```
+
+
+
+
+```{r}
+# ----------------------------
+# ACTUAL VERSION
+# ----------------------------
+
+# I repeated the same steps for predicting actual car prices instead of log-transformed prices.
+excluded_predictors_actual <- c("log_price", "car_price", "model", "variant", "luxury_level")
+predictors_actual <- setdiff(names(train_val_data), excluded_predictors_actual)
+lm_formula_actual <- as.formula(paste("car_price ~", paste(predictors_actual, collapse = " + ")))
+
+# Again, I used 5-fold CV to train and evaluate the model.
+lm_cv_model_actual <- train(
+  lm_formula_actual,
+  data = train_val_data,
+  method = "lm",
+  trControl = cv_control
+)
+
+# Collecting CV metrics for comparison.
+lm_mse_cv_actual <- mean(lm_cv_model_actual$resample$RMSE^2)
+lm_r2_cv_actual  <- mean(lm_cv_model_actual$resample$Rsquared)
+
+# I fit the final model on the full train+val dataset.
+final_lm_model_actual <- lm(lm_formula_actual, data = train_val_data)
+
+# And made predictions on the holy test set.
+lm_preds_holy_actual  <- predict(final_lm_model_actual, newdata = holy_test_data)
+
+# Test set evaluation: MSE and R².
+lm_mse_holy_actual <- mean((holy_test_data$car_price - lm_preds_holy_actual)^2)
+lm_r2_holy_actual  <- cor(holy_test_data$car_price, lm_preds_holy_actual)^2
+
+```
+
+
+
+# Results of Simple Linear Regression
+
+```{r}
+# I organized the results into a single summary table for both log and actual price models.
+lm_eval_table <- data.frame(
+  Version = rep(c("Log Price", "Actual Price"), each = 2),
+  Evaluation = rep(c("Cross-Validation (5-Fold)", "Holy Test Set"), 2),
+  RMSE = c(sqrt(lm_mse_cv_log), sqrt(lm_mse_holy_log),
+           sqrt(lm_mse_cv_actual), sqrt(lm_mse_holy_actual)),
+  R2 = c(lm_r2_cv_log, lm_r2_holy_log,
+         lm_r2_cv_actual, lm_r2_holy_actual)
+)
+
+# I rounded the metrics for better readability.
+lm_eval_table_clean <- lm_eval_table %>%
+  mutate(across(c(RMSE, R2), ~ round(.x, 3)))
+
+# Finally, I displayed the table in a clean HTML format for reporting.
+lm_eval_table_clean %>%
+  kable("html", caption = "Linear Regression Performance (RMSE and R²) — All Evaluation Sets", align = "c") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E79A7")
+
+```
+
+
+
+# Best Subset Selection
+
+```{r}
+# --- BEST SUBSET SELECTION: ACTUAL PRICE VERSION ---
+# Note: I chose to model the actual `car_price` rather than `log_price` for Best Subset Selection,
+# as well as for the Lasso and Ridge models. While log transformation is useful for stabilizing variance 
+# and improving normality in simple linear models, it makes the interpretability of results a bit trickier.
+# Since both regularization and subset selection are already designed to handle variance and overfitting,
+# I felt it was more meaningful to predict the actual prices — especially given our goal of comparing
+# raw predictive performance across models and communicating findings in real monetary terms.
+
+
+# Before starting, I made sure that the function 'generate_formulas()' has been defined.
+
+# I filtered out the 'panel van' body type since it’s a rare case and can cause instability in model selection.
+train_val_data <- train_val_data %>%
+  filter(!body_type %in% "panel van")
+
+# I set my prediction target and excluded variables that are either direct outcomes or problematic for modeling (e.g., high-cardinality or redundant).
+target_bss_actual <- "car_price"
+excluded_bss_actual <- c("log_price", "car_price", "model", "variant", "reg", "luxury_level")
+predictors_bss_actual <- setdiff(names(train_val_data), excluded_bss_actual)
+
+# I created an empty results table to store cross-validation metrics and formulas for each subset size.
+bss_results_actual <- data.frame(
+  predictors_count = integer(),
+  formula = character(),
+  cv_mse = numeric(),
+  cv_r2 = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# I looped through a predefined range of subset sizes (predictor_range) and evaluated all combinations.
+for (p in predictor_range) {
+  formulas <- generate_formulas(p, predictors_bss_actual, target_bss_actual)
+  for (f in formulas) {
+    metrics <- evaluate_formula_cv(f, train_val_data)
+    bss_results_actual <- rbind(bss_results_actual, data.frame(
+      predictors_count = p,
+      formula = f,
+      cv_mse = metrics$mean_mse,
+      cv_r2 = metrics$mean_r2
+    ))
+  }
+}
+
+# I didn’t want to simply choose the formula with the lowest MSE or highest R², since that tends to include *all* predictors—defeating the purpose of subset selection.
+# So I built a custom scoring function that balances prediction error, goodness of fit, and model simplicity.
+# I gave 47.5% weight to normalized RMSE, 47.5% to 1 - normalized R² (so higher R² leads to lower penalty),
+# and a smaller 5% penalty to the number of predictors — to reward more parsimonious models.
+bss_results_actual <- bss_results_actual %>%
+  mutate(score = 0.475 * (cv_mse / max(cv_mse)) +
+                 0.475 * (1 - (cv_r2 / max(cv_r2))) +
+                 0.05 * (predictors_count / max(predictors_count)))
+
+# I selected the best-performing formula based on this custom score.
+best_formula_bss_actual <- as.formula(bss_results_actual$formula[which.min(bss_results_actual$score)])
+model_bss_actual <- lm(best_formula_bss_actual, data = train_val_data)
+
+# I made predictions on the holy test set using this selected model.
+pred_bss_actual_holy <- predict(model_bss_actual, newdata = holy_test_data)
+
+# I then evaluated performance on both CV and holy test data.
+mse_bss_holy_actual <- mean((holy_test_data$car_price - pred_bss_actual_holy)^2)
+r2_bss_holy_actual <- cor(holy_test_data$car_price, pred_bss_actual_holy)^2
+
+# And finally saved the lowest CV MSE and corresponding R² for the best-scoring model.
+mse_bss_cv_actual <- min(bss_results_actual$cv_mse)
+r2_bss_cv_actual <- bss_results_actual$cv_r2[which.min(bss_results_actual$score)]
+
+```
+
+
+```{r}
+# I printed the best formula selected by the custom scoring strategy.
+best_formula_string <- bss_results_actual$formula[which.min(bss_results_actual$score)]
+cat("Best Subset Formula:\n", best_formula_string)
+
+```
+
+
+
+
+
+# Results of the Best Subset Selection
+
+```{r}
+# I created a summary table to clearly display performance of the Best Subset model.
+# I kept the focus only on actual prices, as that's our main evaluation target.
+
+bss_summary_table <- data.frame(
+  Version = "Actual Price",  
+  Evaluation = c("Cross-Validation (5-Fold)", "Holy Test Set"),  
+  RMSE = c(sqrt(mse_bss_cv_actual), sqrt(mse_bss_holy_actual)),  
+  R2 = c(r2_bss_cv_actual, r2_bss_holy_actual)
+)
+
+# Displayed the results in a clean and visually structured HTML table.
+kable(bss_summary_table, caption = "Best Subset Selection Performance (RMSE and R²) — Actual Prices") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE, 
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#28a745") %>%
+  row_spec(1:2, background = "#f7f7f7")
+
+```
+
+
+
+
+
+## Lasso with Cross Validated Lambda
+
+
+
+## Lasso
+
+```{r}
+# ----------------------------
+# LASSO Regression with Cross-Validated Lambda (Actual Price Version)
+# ----------------------------
+
+# I first combined my training and validation sets to fit the Lasso model on the largest possible dataset.
+train_val_data <- bind_rows(train_data, validation_data)
+
+# Prepare input matrices for Lasso. The `model.matrix` function one-hot encodes categorical variables,
+# and I removed the intercept manually with `-1`.
+X_lasso_actual_train <- model.matrix(car_price ~ . -1, data = train_val_data)
+Y_lasso_actual_train <- train_val_data$car_price
+
+X_lasso_actual_test <- model.matrix(car_price ~ . -1, data = holy_test_data)
+Y_lasso_actual_test <- holy_test_data$car_price
+
+# I used 5-fold cross-validation to determine the optimal penalty strength (lambda).
+# Since Lasso is a shrinkage method, this helps identify how aggressively coefficients should be penalized.
+cv_lasso_actual <- cv.glmnet(X_lasso_actual_train, Y_lasso_actual_train, alpha = 1, nfolds = 5)
+
+# I selected the lambda value that minimized the mean cross-validated error.
+best_lambda_lasso_actual <- cv_lasso_actual$lambda.min
+
+# Fit the final Lasso model using the best lambda on the full training+validation set.
+model_lasso_actual <- glmnet(X_lasso_actual_train, Y_lasso_actual_train, alpha = 1, lambda = best_lambda_lasso_actual)
+
+# Generate predictions on the untouched holy test set to evaluate out-of-sample performance.
+pred_lasso_actual_test <- predict(model_lasso_actual, newx = X_lasso_actual_test)
+
+# Compute performance metrics for the holy test set (MSE and R²).
+mse_lasso_actual_test <- mean((Y_lasso_actual_test - pred_lasso_actual_test)^2)
+r2_lasso_actual_test <- cor(Y_lasso_actual_test, pred_lasso_actual_test)^2
+
+# Extract performance from the cross-validation folds as well.
+mse_lasso_cv_actual <- min(cv_lasso_actual$cvm)
+r2_lasso_cv_actual <- 1 - cv_lasso_actual$cvm[cv_lasso_actual$lambda == best_lambda_lasso_actual] / var(Y_lasso_actual_train)
+
+# Summarize Lasso results in a table comparing cross-validation and test set performance.
+lm_eval_tablelasso <- data.frame(
+  Version = "Actual Price",
+  Evaluation = c("Cross-Validation (5-Fold)", "Holy Test Set"),
+  RMSE = c(sqrt(mse_lasso_cv_actual), sqrt(mse_lasso_actual_test)),
+  R2 = c(r2_lasso_cv_actual, r2_lasso_actual_test)
+)
+
+# Display the performance table using kable with basic formatting
+kable(lm_eval_tablelasso, caption = "Lasso Regression Performance (RMSE and R²) — Actual Prices, Cross-Validation and Holy Test Set") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE, 
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#0073e6") %>%
+  row_spec(1:2, background = "#f2f2f2")
+
+```
+
+
+```{r}
+# --- BASE PLOT VERSION ---
+
+# I visualized the cross-validation results from cv.glmnet using the base R plot.
+# This plot shows the mean cross-validated error for each lambda value.
+plot(cv_lasso_actual)
+
+# I added a vertical dashed red line to mark the log of the best lambda chosen via CV.
+abline(v = log(best_lambda_lasso_actual), col = "red", lty = 2)
+
+# Title for clarity
+title("Lasso Cross-Validation Curve", line = 2.5)
+
+
+# --- GGPLOT VERSION ---
+
+# I also created a ggplot version for a more polished and customizable visual.
+# First, I converted the necessary values into a dataframe.
+lambda_df <- data.frame(
+  log_lambda = log(cv_lasso_actual$lambda),
+  cvm = cv_lasso_actual$cvm,      # mean cross-validated error
+  cvsd = cv_lasso_actual$cvsd     # standard deviation of CV error
+)
+
+# Here's the ggplot-based cross-validation curve:
+ggplot(lambda_df, aes(x = log_lambda, y = cvm)) +
+  geom_line(color = "#0073e6") +  # CV error curve
+  geom_ribbon(aes(ymin = cvm - cvsd, ymax = cvm + cvsd), alpha = 0.2) +  # Shaded region for ±1 std error
+  geom_vline(xintercept = log(best_lambda_lasso_actual), color = "red", linetype = "dashed") +  # Highlight best lambda
+  labs(
+    title = "Lasso Cross-Validation Curve",
+    x = "Log(Lambda)",
+    y = "Mean Cross-Validated Error"
+  ) +
+  theme_minimal()
+
+# Finally, I printed the best lambda value.
+cat("Best lambda selected via cross-validation:", best_lambda_lasso_actual, "\n")
+
+```
+
+
+
+
+## Ridge
+
+```{r}
+# ----------------------------
+# Ridge Regression (α = 0)
+# ----------------------------
+
+# I start by preparing the design matrices for training and holy test sets.
+# The "-1" removes the intercept term since glmnet adds it internally.
+X_ridge_actual_train <- model.matrix(car_price ~ . -1, data = train_val_data)
+Y_ridge_actual_train <- train_val_data$car_price
+
+X_ridge_actual_test <- model.matrix(car_price ~ . -1, data = holy_test_data)
+Y_ridge_actual_test <- holy_test_data$car_price
+
+# I apply 5-fold cross-validation to find the optimal regularization strength (lambda) for Ridge.
+# Here, alpha = 0 enforces Ridge (L2 penalty).
+cv_ridge_actual <- cv.glmnet(X_ridge_actual_train, Y_ridge_actual_train, alpha = 0, nfolds = 5)
+best_lambda_ridge_actual <- cv_ridge_actual$lambda.min  # This is the best lambda chosen via CV
+
+# With the optimal lambda selected, I fit the final Ridge model using the entire training set.
+model_ridge_actual <- glmnet(X_ridge_actual_train, Y_ridge_actual_train, alpha = 0, lambda = best_lambda_ridge_actual)
+
+# I then evaluate performance on the test set for reference.
+pred_ridge_actual_test <- predict(model_ridge_actual, newx = X_ridge_actual_test)
+mse_ridge_test_actual <- mean((Y_ridge_actual_test - pred_ridge_actual_test)^2)
+r2_ridge_test_actual <- cor(Y_ridge_actual_test, pred_ridge_actual_test)^2
+
+# Then I repeat the evaluation on the holy test set to simulate unseen data performance.
+X_ridge_actual_holy <- model.matrix(car_price ~ . -1, data = holy_test_data)
+Y_ridge_actual_holy <- holy_test_data$car_price
+
+pred_ridge_actual_holy <- predict(model_ridge_actual, newx = X_ridge_actual_holy)
+mse_ridge_holy_actual <- mean((Y_ridge_actual_holy - pred_ridge_actual_holy)^2)
+r2_ridge_holy_actual <- cor(Y_ridge_actual_holy, pred_ridge_actual_holy)^2
+
+# Lastly, I store the best cross-validated performance values (lowest RMSE and its corresponding R²).
+mse_ridge_cv_actual <- min(cv_ridge_actual$cvm)
+r2_ridge_cv_actual <- 1 - cv_ridge_actual$cvm[cv_ridge_actual$lambda == best_lambda_ridge_actual] / var(Y_ridge_actual_train)
+
+```
+
+
+```{r}
+
+# I now format the results into a clean summary table using kable.
+# This allows me to compare Ridge performance on both CV and holy test data.
+ridge_table <- data.frame(
+  Version = "Price", 
+  Evaluation = c("Cross-Validation (5-Fold)", "Holy Test Set"),
+  RMSE = c(sqrt(mse_ridge_cv_actual), sqrt(mse_ridge_holy_actual)),  # RMSE values
+  R2 = c(r2_ridge_cv_actual, r2_ridge_holy_actual)  # R² values
+)
+
+# I print the table in HTML format with a clean design and a blue header for Ridge.
+ridge_table %>%
+  kable("html", caption = "Ridge Regression Performance (RMSE and R²)", align = "lcc") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    full_width = FALSE, position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "steelblue3")
+
+```
+
+
+```{r}
+# --- BASE PLOT VERSION (RIDGE) ---
+
+# I visualized the cross-validation curve for Ridge using base R's default glmnet plot.
+# This helps me inspect how the CV error changes across log(lambda) values.
+plot(cv_ridge_actual)
+
+# I added a vertical dashed line to highlight the log of the best lambda selected by CV.
+abline(v = log(best_lambda_ridge_actual), col = "red", lty = 2)
+
+# Title for the plot
+title("Ridge Cross-Validation Curve", line = 2.5)
+
+# --- GGPLOT VERSION (RIDGE) ---
+
+# I used ggplot2 to plot the CV error and highlight the optimal lambda.
+# First, I converted the lambda values and corresponding CV errors into a dataframe.
+lambda_df_ridge <- data.frame(
+  log_lambda = log(cv_ridge_actual$lambda),
+  cvm = cv_ridge_actual$cvm,      # Mean CV error
+  cvsd = cv_ridge_actual$cvsd     # Standard deviation of CV error
+)
+
+# Now I build the ggplot version:
+ggplot(lambda_df_ridge, aes(x = log_lambda, y = cvm)) +
+  geom_line(color = "#009999") +  # Ridge-themed curve color
+  geom_ribbon(aes(ymin = cvm - cvsd, ymax = cvm + cvsd), alpha = 0.2) +  # Shaded uncertainty band
+  geom_vline(xintercept = log(best_lambda_ridge_actual), color = "red", linetype = "dashed") +  # Best lambda marker
+  labs(
+    title = "Ridge Cross-Validation Curve",
+    x = "Log(Lambda)",
+    y = "Mean Cross-Validated Error"
+  ) +
+  theme_minimal()
+
+# Finally, I printed the best lambda value.
+cat("Best lambda selected for Ridge via cross-validation:", best_lambda_ridge_actual, "\n")
+
+```
+
+
+
+# Comparison of Linear Models
+
+```{r}
+# --- MODEL PERFORMANCE COMPARISON: LINEAR vs BEST SUBSET vs LASSO vs RIDGE ---
+
+# I first created a summary dataframe that holds the key performance metrics
+# for each model based on 5-fold cross-validation using the actual price scale.
+cv_actual_results <- data.frame(
+  Model = c("Linear", "Best Subset", "Lasso", "Ridge"),
+  RMSE = c(
+    sqrt(lm_mse_cv_actual),        # Linear Regression
+    sqrt(mse_bss_cv_actual),       # Best Subset Selection
+    sqrt(mse_lasso_cv_actual),     # Lasso Regression
+    sqrt(mse_ridge_cv_actual)      # Ridge Regression
+  ),
+  R2  = c(
+    lm_r2_cv_actual,
+    r2_bss_cv_actual,
+    r2_lasso_cv_actual,
+    r2_ridge_cv_actual
+  )
+)
+
+# --- RMSE Bar Chart ---
+
+# To visually compare model accuracy, I plotted RMSE for each model.
+# Lower RMSE indicates better predictive performance on the actual price scale.
+ggplot(cv_actual_results, aes(x = Model, y = RMSE, fill = Model)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Cross-Validated RMSE (Actual Price)",
+    y = "RMSE"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")  # No need for a legend since bars are labeled directly
+
+# --- R² Bar Chart ---
+
+# I also plotted R² values to assess how well each model explains variance in the actual car prices.
+# Higher R² means better model fit. This helps me understand model performance from a complementary angle.
+ggplot(cv_actual_results, aes(x = Model, y = R2, fill = Model)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Cross-Validated R² (Actual Price)",
+    y = "R²"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+
+
+# Advanced and Compact Comparison of Linear Models
+```{r}
+# --- ADVANCED PERFORMANCE COMPARISON: Dual-Axis Visualization for RMSE and R² ---
+
+library(ggplot2)
+
+# I created a compact data frame that holds both RMSE and R² values for each linear model.
+# To make them comparable on one y-axis, I scaled R² values by 10,000 — this allows dual-axis plotting later on.
+results_dflinear <- data.frame(
+  Model = rep(c("Linear", "Best Subset", "Lasso", "Ridge"), each = 2),
+  Metric = rep(c("RMSE", "R²"), times = 4),
+  Value = c(
+    sqrt(lm_mse_cv_actual), 10000 * lm_r2_cv_actual,
+    sqrt(mse_bss_cv_actual), 10000 * r2_bss_cv_actual,
+    sqrt(mse_lasso_cv_actual), 10000 * r2_lasso_cv_actual,
+    sqrt(mse_ridge_cv_actual), 10000 * r2_ridge_cv_actual
+  )
+)
+
+# This plot allows me to visually compare both RMSE and R² for each linear model in one unified chart.
+# RMSE is plotted on the left y-axis, while R² is scaled and plotted on the right for interpretability.
+ggplot(results_dflinear, aes(x = Model)) +
+  geom_bar(aes(y = Value, fill = Metric), stat = "identity", 
+           position = position_dodge(width = 0.8), width = 0.6) +
+
+  # Set up dual y-axes: left for RMSE and right for rescaled R²
+  scale_y_continuous(
+    name = "RMSE",  # Left y-axis title
+    breaks = seq(0, 10000, by = 500),  # More granularity on RMSE ticks
+    sec.axis = sec_axis(~ . / 10000, name = "R²", breaks = seq(0, 1, by = 0.05))  # Right y-axis for R²
+  ) +
+  
+  # Plot title and axis labels
+  labs(title = "Linear Model Performance Comparison", x = "Model") +
+
+  # Aesthetic settings for a clean and intuitive design
+  theme_light(base_size = 14) +
+  theme(
+    panel.grid.major.y = element_line(color = "#D3D3D3", size = 0.5),
+    panel.grid.minor.y = element_line(color = "#EAEAEA", size = 0.25),
+    axis.title.y.right = element_text(color = "purple", size = 14), 
+    axis.text.y.right = element_text(color = "purple", size = 10),
+    axis.title.y.left = element_text(color = "orange", size = 14),
+    axis.text.y.left = element_text(color = "orange", size = 10),
+    axis.title.x = element_text(size = 14), 
+    axis.text.x = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    legend.position = "top"
+  ) +
+
+  # Manually assign fill colors for clarity and visual consistency
+  scale_fill_manual(values = c("RMSE" = "orange", "R²" = "purple"))
+
+```
+
+
+
+# Table for Comparison of RMSE and R^2 Values of Linear Models
+```{r}
+library(kableExtra)
+
+# I first prepare a data frame containing the performance metrics (RMSE and R²)
+# for each of the linear models. I round RMSE to 1 decimal and R² to 3 decimals for clarity.
+linear_model_perf <- data.frame(
+  Model = c("Linear", "Best Subset", "Lasso", "Ridge"),
+  RMSE = c(
+    round(sqrt(lm_mse_cv_actual), 1),           # Root Mean Squared Error
+    round(sqrt(mse_bss_cv_actual), 1),
+    round(sqrt(mse_lasso_cv_actual), 1),
+    round(sqrt(mse_ridge_cv_actual), 1)
+  ),
+  R2 = c(
+    round(lm_r2_cv_actual, 3),                  # R-squared
+    round(r2_bss_cv_actual, 3),
+    round(r2_lasso_cv_actual, 3),
+    round(r2_ridge_cv_actual, 3)
+  )
+)
+
+# I use kableExtra to generate a clean and professional HTML table.
+# This table summarizes model performance in a format suitable for reports.
+linear_model_perf %>%
+  kable("html", caption = "Linear Model Performance (RMSE and R²)", align = "c") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),  # Compact, readable style
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E79A7") %>%    # Header style
+  row_spec(1:4, background = "#f7f7f7")                                     # Light gray rows for clarity
+
+```
+
+
+
+## Incorporating Luxury Levels to Linear Models with Visualizations
+
+
+
+
+
+
+
+```{r}
+# ---------------------------------------------
+# Identify the 5 Most Over- and Underpredicted Brands
+# ---------------------------------------------
+
+# I summarize the average percentage residual for each brand to detect consistent prediction bias.
+brand_bias_summary <- holy_test_data %>%
+  group_by(make) %>%
+  summarise(mean_pct_residual = round(mean(pct_residual, na.rm = TRUE), 2),
+            n = n()) %>%
+  arrange(mean_pct_residual)
+
+# To improve reliability, I exclude brands with fewer than 5 cars in the test set.
+brand_bias_summary <- brand_bias_summary %>% filter(n >= 5)
+
+# I identify the most overpredicted brands (lowest residuals).
+top5_overpredicted <- head(brand_bias_summary, 5)
+
+# And also the most underpredicted brands (highest residuals).
+top5_underpredicted <- tail(brand_bias_summary, 5)
+
+# Show top 5 overpredicted brands in a nice HTML table
+kable(top5_overpredicted, caption = "🔻 Top 5 Overpredicted Brands for Lasso (Model Predicts Too High)", 
+      col.names = c("Brand", "Mean Residual (%)", "Observations")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#F28E2B") %>% 
+  row_spec(1:5, background = "#F9F1E7")
+
+# Show top 5 underpredicted brands in a second table
+kable(top5_underpredicted[order(-top5_underpredicted$mean_pct_residual), ], 
+      caption = "🔺 Top 5 Underpredicted Brands for Lasso (Model Predicts Too Low)", 
+      col.names = c("Brand", "Mean Residual (%)", "Observations")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4C9C88") %>%
+  row_spec(1:5, background = "#E6F8F2")
+
+```
+
+
+```{r}
+# ---------------------------------------------
+# SECTION 4: Residuals + Brand Count by Luxury Level and Brand
+# ---------------------------------------------
+
+# I re-calculate percentage residuals to ensure consistency for downstream use.
+holy_test_data$predicted_lasso <- as.numeric(pred_lasso_actual_test)
+holy_test_data$pct_residual <- (holy_test_data$car_price - holy_test_data$predicted_lasso) / holy_test_data$car_price * 100
+
+# I then summarize the average percentage residual and number of observations per brand in each luxury level.
+residual_summary <- holy_test_data %>%
+  group_by(luxury_level, make) %>%
+  summarise(
+    mean_pct_residual = mean(pct_residual, na.rm = TRUE),
+    brand_count = n()
+  ) %>%
+  arrange(luxury_level, desc(mean_pct_residual))
+
+# Loop through each luxury level again to plot both residual bias and brand sample size
+luxury_levels <- sort(unique(residual_summary$luxury_level))
+
+for (lvl in luxury_levels) {
+  data_subset <- residual_summary %>%
+    filter(luxury_level == lvl) %>%
+    arrange(desc(mean_pct_residual)) %>%
+    mutate(make = factor(make, levels = make))  # Order brands within each plot
+
+  # I match the left and right y-axis scales by computing a ratio for visual alignment
+  max_left <- max(abs(data_subset$mean_pct_residual), na.rm = TRUE)
+  max_right <- max(data_subset$brand_count, na.rm = TRUE)
+  scale_factor <- max_left / max_right
+
+  # I create a dual-axis bar plot showing both residual bias and brand count
+  p <- ggplot(data_subset, aes(x = make)) +
+    geom_bar(aes(y = mean_pct_residual, fill = make), stat = "identity") +
+    geom_segment(aes(
+      x = make, xend = make,
+      y = 0,
+      yend = pmax(0, brand_count * scale_factor)
+    ), color = "black", linewidth = 0.8) +  # Black line shows sample size
+
+    # Add guide lines to help interpret bias
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+    geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+
+    # Configure dual y-axis
+    scale_y_continuous(
+      name = "Mean Percentage Residual",
+      sec.axis = sec_axis(
+        trans = ~ . / scale_factor,
+        name = "Brand Count",
+        breaks = pretty(c(0, max_right))
+      )
+    ) +
+  scale_fill_viridis_d(option = "C", begin = 0.1, end = 0.9) +
+    labs(
+      title = paste("Luxury Level", lvl, "- Residual Bias (Bars) + Brand Count (Black Line)\n(Lasso)"),
+      x = "Car Brand"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      axis.title.y.left = element_text(color = "steelblue4"),
+      axis.title.y.right = element_text(color = "black"),
+      legend.position = "none"
+    )
+
+  print(p)
+}
+
+```
+
+
+
+```{r}
+# ---------------------------------------------
+# Residual Analysis for Luxury Level 3 (Excluding Chrysler)
+# ---------------------------------------------
+
+# STEP 1: Filter and summarize the data
+lux_3_data <- holy_test_data %>%
+  # I focus only on cars in luxury level 3 and exclude Chrysler (which was an outlier in previous plots).
+  filter(luxury_level == 3, make != "Chrysler") %>%
+  group_by(make) %>%
+  summarise(
+    mean_pct_residual = mean(pct_residual, na.rm = TRUE),  # Average residual error per brand
+    brand_count = n()  # Sample size for each brand
+  ) %>%
+  arrange(desc(mean_pct_residual)) %>%
+  # I reorder brand factor levels so they appear in descending order on the x-axis
+  mutate(make = factor(make, levels = make))
+
+# STEP 2: Calculate scale factor for dual-axis plotting
+# I compute a scaling factor to visually align the left (residuals) and right (brand count) axes.
+max_left <- max(abs(lux_3_data$mean_pct_residual), na.rm = TRUE)
+max_right <- max(lux_3_data$brand_count, na.rm = TRUE)
+scale_factor <- max_left / max_right
+
+# STEP 3: Create the dual-axis bar plot
+ggplot(lux_3_data, aes(x = make)) +
+  
+  # Plot 1: Residual bars for each brand
+  geom_bar(aes(y = mean_pct_residual, fill = make), stat = "identity") +
+
+  # Plot 2: Black lines showing brand sample size (scaled to match left axis)
+  geom_segment(aes(
+    x = make, xend = make,
+    y = 0,
+    yend = pmax(0, brand_count * scale_factor)  # Prevent negative line heights
+  ), color = "black", linewidth = 0.8) +
+
+  # Add reference lines for 0% and ±15% thresholds
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+
+  # Configure dual y-axes: left for residuals, right for brand counts
+  scale_y_continuous(
+    name = "Mean Percentage Residual",
+    sec.axis = sec_axis(
+      trans = ~ . / scale_factor,
+      name = "Brand Count",
+      breaks = pretty(c(0, max_right))  # Automatically generate evenly spaced breaks
+    )
+  ) +
+
+  # Add colors and layout formatting
+  scale_fill_viridis_d(option = "C", begin = 0.1, end = 0.9) +
+  labs(
+    title = "Luxury Level 3 - Residual Bias (Bars) + Brand Count (Black Line) 
+                    (Excluding Chrysler)  (Lasso model)",
+    x = "Car Brand"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),  # Tilt x-axis labels for readability
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.title.y.left = element_text(color = "steelblue4"),
+    axis.title.y.right = element_text(color = "black"),
+    legend.position = "none"  # I hide the fill legend to avoid clutter
+  )
+
+```
+
+
+
+
+
+```{r}
+# -------------------------------------------------------
+# Residual Analysis by Price Range and Luxury Level (Lasso)
+# -------------------------------------------------------
+
+# STEP 3: Group the data by luxury level and price range, and calculate residual statistics
+residual_summary <- holy_test_data %>%
+  # I first bin car prices into predefined price ranges for easier interpretation
+  mutate(price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) %>%
+  group_by(luxury_level, price_range) %>%
+  summarise(
+    mean_pct_residual = mean(pct_residual, na.rm = TRUE),  # Average prediction error per group
+    brand_count = n()  # Number of observations per price range within each luxury level
+  ) %>%
+  arrange(luxury_level, desc(mean_pct_residual))  # Just to keep things tidy and ordered
+
+# STEP 4: Loop through each luxury level and create visualizations
+luxury_levels <- sort(unique(residual_summary$luxury_level))  # List of unique levels
+
+for (lvl in luxury_levels) {
+  
+  # Filter data to the current luxury level
+  data_subset <- residual_summary %>%
+    filter(luxury_level == lvl) %>%
+    arrange(desc(mean_pct_residual)) %>%
+    mutate(price_range = factor(price_range, levels = price_range))  # Maintain order on x-axis
+
+  # Compute scaling factor for dual y-axes (residuals on left, count on right)
+  max_left <- max(abs(data_subset$mean_pct_residual), na.rm = TRUE)
+  max_right <- max(data_subset$brand_count, na.rm = TRUE)
+  scale_factor <- max_left / max_right  # Helps to align both metrics visually
+ # Create dual-axis plot for each luxury level
+  p <- ggplot(data_subset, aes(x = price_range)) +
+    
+    # Plot bars showing mean percentage residuals
+    geom_bar(aes(y = mean_pct_residual, fill = price_range), stat = "identity", alpha = 1) +
+    
+    # Overlay a thin black column for brand counts (scaled to match residuals)
+    geom_col(aes(y = brand_count * scale_factor), fill = "black", width = 0.1) +
+
+    # Add reference lines for interpretability
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +  # Neutral line
+    geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +  # +15% warning line
+    geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +  # -15% warning line
+
+    # Set up dual y-axes: primary for residuals, secondary for brand counts
+    scale_y_continuous(
+      name = "Mean Percentage Residual",
+      sec.axis = sec_axis(
+        trans = ~ . / scale_factor,
+        name = "Price Range Count",
+        breaks = pretty(c(0, max_right))
+      )
+    ) +
+
+    # Styling and labeling
+    scale_fill_viridis_d(option = "C", begin = 0.1, end = 0.9) +
+    labs(
+      title = paste("Luxury Level", lvl, "- Residual Bias (Bars) + Price Range Count (Black Line)\n(Lasso model)"),
+      x = "Price Range"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      axis.title.y.left = element_text(color = "steelblue4"),
+      axis.title.y.right = element_text(color = "black"),
+      legend.position = "none"
+    )
+
+  # Display the plot
+  print(p)
+}
+
+```
+
+
+```{r}
+# ---------------------------------------------
+# SECTION 5: Residuals + Brand Count by Luxury Level and Brand
+# ---------------------------------------------
+
+# I re-calculate percentage residuals to ensure consistency for downstream use.
+holy_test_data$predicted_lasso <- as.numeric(pred_lasso_actual_test)
+holy_test_data$pct_residual <- (holy_test_data$car_price - holy_test_data$predicted_lasso) / holy_test_data$car_price * 100
+
+# I then summarize the average percentage residual and number of observations per brand in each luxury level.
+residual_summary <- holy_test_data %>%
+  group_by(luxury_level, make) %>%
+  summarise(
+    mean_pct_residual = mean(pct_residual, na.rm = TRUE),
+    brand_count = n()
+  ) %>%
+  arrange(luxury_level, desc(mean_pct_residual))
+
+# Loop through each luxury level again to plot both residual bias and brand sample size
+luxury_levels <- sort(unique(residual_summary$luxury_level))
+
+for (lvl in luxury_levels) {
+  
+  # I filter for current luxury level and order brands within each plot
+  data_subset <- residual_summary %>%
+    filter(luxury_level == lvl) %>%
+    arrange(desc(mean_pct_residual)) %>%
+    mutate(make = factor(make, levels = make))
+
+  # I match the left and right y-axis scales by computing a ratio for visual alignment
+  max_left <- max(abs(data_subset$mean_pct_residual), na.rm = TRUE)
+  max_right <- max(data_subset$brand_count, na.rm = TRUE)
+  scale_factor <- max_left / max_right
+
+  # I create a dual-axis bar plot showing both residual bias and brand count
+  p <- ggplot(data_subset, aes(x = make)) +
+    geom_bar(aes(y = mean_pct_residual, fill = make), stat = "identity") +
+    geom_segment(aes(
+      x = make, xend = make,
+      y = 0,
+      yend = pmax(0, brand_count * scale_factor)
+    ), color = "black", linewidth = 0.8) +  # Black line shows sample size
+
+    # Add guide lines to help interpret bias
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+    geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+
+    # Set dual y-axis
+    scale_y_continuous(
+      name = "Mean Percentage Residual",
+      sec.axis = sec_axis(~ . / scale_factor, name = "Brand Count")
+    ) +
+
+    # Add title and theme styling
+    labs(
+      title = paste("Luxury Level", lvl, "- Residuals & Brand Count"),
+      x = "Brand"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      legend.position = "none"
+    )
+
+  print(p)  # I ensure the plot is rendered inside the loop
+}
+
+```
+
+
+
+```{r}
+# ---------------------------------------------
+# Visualizing Mean Percentage Residuals by Luxury Level (Lasso)
+# ---------------------------------------------
+
+# STEP 1: Calculate summary statistics by luxury level
+residual_summarylinear <- holy_test_data %>%
+  group_by(luxury_level) %>%
+  summarise(
+    mean_residual = mean(pct_residual, na.rm = TRUE),  # I’m taking the average % residual for each luxury level
+    count = n()  # And keeping track of how many cars are in each level
+  )
+
+# STEP 2: Create a bar plot of mean residuals by luxury level
+ggplot(residual_summarylinear, aes(x = luxury_level, y = mean_residual, fill = luxury_level)) +
+  
+  # Draw bars to show average percentage residuals
+  geom_bar(stat = "identity") +
+  
+  # Overlay the number of cars as labels above each bar
+  geom_text(aes(label = count), vjust = -0.3, size = 3.5) +
+  
+  # Add titles and axis labels
+  labs(
+    title = "Percentage Residuals by Luxury Level (Lasso)", 
+    x = "Luxury Level", 
+    y = "Mean Absolute Residual"
+  ) +
+  
+  # Clean and simple visual styling
+  theme_minimal() +
+  theme(
+    legend.position = "none"  # I’m hiding the legend since the x-axis already tells us the group
+  )
+
+```
+
+
+
+
+```{r}
+# ---------------------------------------------
+# Visualizing Mean Absolute Residuals (Not in %) by Luxury Level (Lasso)
+# ---------------------------------------------
+
+# STEP 1: Compute absolute residuals for each observation
+residual_summarylinear2 <- holy_test_data %>%
+  mutate(abs_residual = car_price - predicted_lasso) %>%  # I calculate the difference between actual and predicted price
+  group_by(luxury_level) %>%
+  summarise(
+    mean_residual = mean(abs_residual, na.rm = TRUE),  # Then I compute the average absolute residual for each luxury level
+    count = n()  # And count how many cars are in each level
+  )
+
+# STEP 2: Visualize these residuals in a bar chart
+ggplot(residual_summarylinear2, aes(x = luxury_level, y = mean_residual, fill = luxury_level)) +
+  
+  # Create bars for average absolute residuals
+  geom_bar(stat = "identity") +
+  
+  # Overlay car counts above the bars
+  geom_text(aes(label = count), vjust = -0.3, size = 3.5) +
+  
+  # Add titles and axis labels
+  labs(
+    title = "Absolute Residuals by Luxury Level (Lasso)", 
+    x = "Luxury Level", 
+    y = "Mean Absolute Residual"
+  ) +
+  # Apply a clean and minimal theme
+  theme_minimal() +
+  theme(
+    legend.position = "none"  # I turn off the legend since the luxury level is already on the x-axis
+  )
+
+```
+
+
+
+```{r}
+# ---------------------------------------------------------------
+# Visualizing Mean Absolute Residuals by Luxury Level (Excl. Level 5)
+# ---------------------------------------------------------------
+
+# STEP 1: Prepare summary statistics excluding level 5
+residual_summarylinear3 <- holy_test_data %>%
+  filter(luxury_level != 5) %>%  # I exclude luxury level 5 due to its small size or outlier behavior
+  mutate(abs_residual = car_price - predicted_lasso) %>%  # I calculate the absolute residuals
+  group_by(luxury_level) %>%
+  summarise(
+    mean_residual = mean(abs_residual, na.rm = TRUE),  # Compute average residual per level
+    count = n()  # Count how many cars are in each level
+  )
+
+# STEP 2: Create a bar plot for the average residuals
+ggplot(residual_summarylinear3, aes(x = as.factor(luxury_level), y = mean_residual, fill = as.factor(luxury_level))) +
+  
+  # Visualize mean residuals as bars
+  geom_bar(stat = "identity") +
+  
+  # Add the number of cars above each bar
+  geom_text(aes(label = count), vjust = -0.3, size = 3.5) +
+  
+  # Label the plot
+  labs(
+    title = "Absolute Residuals by Luxury Level (Lasso)", 
+    x = "Luxury Level", 
+    y = "Mean Absolute Residual"
+  ) +
+  
+  # Apply a clean and modern look
+  theme_minimal() +
+  theme(
+    legend.position = "none"  # I disable the legend since luxury level is already shown on the x-axis
+  )
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Final results comparison 
+
+# This part was written jointly by Kay and Yasemin, but the annotations were by Kay only
+
+
+
+
+```{r}
+
+
+
+
+results_final <- data.frame(
+  Model = rep(c("Linear", "Best Subset", "Lasso", "Ridge", 
+                "Random Forest", "XGBoost", "KNN", "NN"), each = 2),
+  Metric = rep(c("RMSE", "R²"), times = 8),
+  Value = c(
+    sqrt(lm_mse_cv_actual), 10000 * lm_r2_cv_actual,
+    sqrt(mse_bss_cv_actual), 10000 * r2_bss_cv_actual,
+    sqrt(mse_lasso_cv_actual), 10000 * r2_lasso_cv_actual,
+    sqrt(mse_ridge_cv_actual), 10000 * r2_ridge_cv_actual,
+    rf_metrics["RMSE"], 10000 * rf_metrics["Rsquared"],
+    xgb_metrics["RMSE"], 10000 * xgb_metrics["Rsquared"],
+    knn_metrics["RMSE"], 10000 * knn_metrics["Rsquared"],
+    nn_metrics["RMSE"], 10000 * nn_metrics["Rsquared"]
+  )
+)
+
+#and plot the results
+
+ggplot(results_final, aes(x = Model)) +
+  geom_bar(aes(y = Value, fill = Metric), stat = "identity", 
+           position = position_dodge(width = 0.8), width = 0.6) +
+  scale_y_continuous(
+    name = "RMSE",  # Left y-axis
+    breaks = seq(0, 10000, by = 1000),  # Add more grid lines by increasing break granularity
+    sec.axis = sec_axis(~ . / 10000, name = "R²", breaks = seq(0, 1, by = 0.10))
+  ) +
+  labs(title = "Linear and Non-Linear Model Performance Comparison", x = "Model") +
+  theme_light(base_size = 14) +
+  theme(
+  panel.grid.major.y = element_line(color = "#D3D3D3", size = 0.5),
+  panel.grid.minor.y = element_line(color = "#EAEAEA", size = 0.25),
+  axis.title.y.right = element_text(color = "purple", size = 14), 
+  axis.text.y.right = element_text(color = "purple", size = 10),  # smaller tick text
+  axis.title.y.left = element_text(color = "orange", size = 14),
+  axis.text.y.left = element_text(color = "orange", size = 10),   # smaller tick text
+  axis.title.x = element_text(size = 14), 
+  axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+  plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+  legend.position = "top"
+) +
+  scale_fill_manual(values = c("RMSE" = "orange", "R²" = "purple"))
+
+```
+
+
+```{r}
+
+results_final2 <- data.frame(
+  Model = rep(c("Linear", "Best Subset", "Lasso", "Ridge", 
+                "Random Forest", "XGBoost", "KNN", "NN"), each = 2),
+  Metric = rep(c("RMSE", "R²"), times = 8),
+  Value = c(
+    sqrt(lm_mse_cv_actual),  lm_r2_cv_actual,
+    sqrt(mse_bss_cv_actual),  r2_bss_cv_actual,
+    sqrt(mse_lasso_cv_actual),  r2_lasso_cv_actual,
+    sqrt(mse_ridge_cv_actual),  r2_ridge_cv_actual,
+    rf_metrics["RMSE"],  rf_metrics["Rsquared"],
+    xgb_metrics["RMSE"],  xgb_metrics["Rsquared"],
+    knn_metrics["RMSE"],  knn_metrics["Rsquared"],
+    nn_metrics["RMSE"],  nn_metrics["Rsquared"]
+  )
+)
+
+
+library(tidyr)
+library(dplyr)
+library(kableExtra)
+
+# Pivot the results wider: one row per Metric, columns for each Model
+results_wide <- results_final2 %>%
+  pivot_wider(names_from = Model, values_from = Value) %>%
+  mutate(across(-Metric, ~ round(.x, 3)))  # Round all numeric columns except Metric
+
+# Display nicely with kableExtra
+results_wide %>%
+  kable("html", caption = "Model Performance Metrics", align = "c") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E79A7")
+
+```
+
+
+```{r}
+# Group by brand and compute mean signed percentage residual
+brand_bias_summary2 <- comparisonsetnonlinear %>%
+  group_by(make) %>%
+  summarise(mean_pct_residual =round(mean(residualxgbpct, na.rm = TRUE), 2),
+            n = n()) %>%
+  arrange(mean_pct_residual)
+
+# Optional: filter out brands with too few observations
+brand_bias_summary2 <- brand_bias_summary2 %>% filter(n >= 5)
+
+# Top 5 overpredicted (most negative)
+top5_overpredicted2 <- head(brand_bias_summary2, 5)
+
+# Top 5 underpredicted (most positive)
+top5_underpredicted2 <- tail(brand_bias_summary2, 5)
+
+# Display top 5 overpredicted brands
+kable(top5_overpredicted2, caption = "🔻 Top 5 Overpredicted Brands for XGBoost (Model Predicts Too High)", 
+      col.names = c("Brand", "Mean Residual (%)", "Observations")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#D32F2F") %>%  # Red background for the header
+  row_spec(1:5, background = "#F9F1E7")  # Light red background for the data rows
+
+# Display top 5 underpredicted brands
+kable(top5_underpredicted2[order(-top5_underpredicted$mean_pct_residual), ], 
+      caption = "🔺 Top 5 Underpredicted Brands for XGBoost (Model Predicts Too Low)", 
+      col.names = c("Brand", "Mean Residual (%)", "Observations")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#1976D2") %>%  # Blue background for the header
+  row_spec(1:5, background = "#D0E3F1")  # Light blue background for the data rows
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+# Prepare LASSO summary
+lasso_summary <- holy_test_data %>%
+  mutate(price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) %>%
+  group_by(luxury_level, price_range) %>%
+  summarise(
+    mean_pct_residual = mean(pct_residual, na.rm = TRUE),
+    brand_count = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(model = "LASSO")
+
+# Prepare XGBoost summary
+xgb_summary <- comparisonsetnonlinear %>%
+  mutate(price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) %>%
+  group_by(luxury_level, price_range) %>%
+  summarise(
+    mean_pct_residual = mean(residualxgbpct, na.rm = TRUE),
+    brand_count = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(model = "XGBoost")
+
+# Combine both
+residual_combined <- bind_rows(lasso_summary, xgb_summary)
+
+```
+
+
+
+```{r}
+luxury_levels <- sort(unique(residual_combined$luxury_level))
+
+for (lvl in luxury_levels) {
+  # Filter data for current luxury level
+  data_subset <- residual_combined %>%
+    filter(luxury_level == lvl)
+
+  # Match scales for secondary y-axis
+  max_left <- max(abs(data_subset$mean_pct_residual), na.rm = TRUE)
+  max_right <- max(data_subset$brand_count, na.rm = TRUE)
+  scale_factor <- max_left / max_right
+
+  # Plot with side-by-side bars (LASSO vs XGBoost)
+  p <- ggplot(data_subset, aes(x = price_range, fill = model)) +
+    geom_bar(aes(y = mean_pct_residual), stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+    geom_col(aes(y = brand_count * scale_factor), 
+             fill = "black", width = 0.06, position = position_nudge(x = 0.01)) +
+
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+    geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+
+    scale_y_continuous(
+      name = "Mean Percentage Residual",
+      sec.axis = sec_axis(~ . / scale_factor, name = "Price Range Count")
+    ) +
+
+    labs(
+      title = paste("Luxury Level", lvl, "- LASSO vs XGBoost Residuals by Price Bin"),
+      x = "Price Range",
+      fill = "Model"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      legend.position = "top"
+    )
+
+  print(p)
+}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+# --- LASSO Summary ---
+lasso_brand_summary <- holy_test_data %>%
+  group_by(luxury_level, make) %>%
+  summarise(
+    mean_pct_residual = mean(pct_residual, na.rm = TRUE),
+    brand_count = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(model = "LASSO")
+
+# --- XGBoost Summary ---
+xgb_brand_summary <- comparisonsetnonlinear %>%
+  group_by(luxury_level, make) %>%
+  summarise(
+    mean_pct_residual = mean(residualxgbpct, na.rm = TRUE),
+    brand_count = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(model = "XGBoost")
+
+# --- Combine ---
+brand_combined <- bind_rows(lasso_brand_summary, xgb_brand_summary)
+
+```
+
+
+
+```{r}
+luxury_levels <- sort(unique(brand_combined$luxury_level))
+
+for (lvl in luxury_levels) {
+  # Filter for current luxury level
+  data_subset <- brand_combined %>%
+    filter(luxury_level == lvl)
+
+  # Reorder brands by average residual to keep plots tidy
+  brand_order <- data_subset %>%
+    group_by(make) %>%
+    summarise(avg_res = mean(mean_pct_residual)) %>%
+    arrange(desc(avg_res)) %>%
+    pull(make)
+
+  data_subset <- data_subset %>%
+    mutate(make = factor(make, levels = brand_order))
+
+  # Scaling for brand count line
+  max_left <- max(abs(data_subset$mean_pct_residual), na.rm = TRUE)
+  max_right <- max(data_subset$brand_count, na.rm = TRUE)
+  scale_factor <- ifelse(max_right == 0, 1, max_left / max_right)
+
+  # Plot with side-by-side bars
+  p <- ggplot(data_subset, aes(x = make, fill = model)) +
+    geom_bar(aes(y = mean_pct_residual), stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+    geom_segment(
+      aes(x = make, xend = make,
+          y = 0, yend = brand_count * scale_factor),
+      color = "black",
+      position = position_nudge(x = 0.001),
+      linewidth = 0.76
+    ) +
+
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+    geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+
+    scale_y_continuous(
+      name = "Mean Percentage Residual",
+      sec.axis = sec_axis(~ . / scale_factor, name = "Brand Count")
+    ) +
+
+    labs(
+      title = paste("Luxury Level", lvl, "- LASSO vs XGBoost Residuals by Brand"),
+      x = "Brand",
+      fill = "Model"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      legend.position = "top"
+    )
+
+  print(p)
+}
+
+```
+
+
+
+
+
+
+
+
+wihout chrysler:
+
+
+```{r}
+# Filter for luxury level 3 and exclude Chrysler
+data_subset <- brand_combined %>%
+  filter(luxury_level == 3) %>%
+  filter(make != "Chrysler")
+
+# Reorder brands by average residual to keep plots tidy
+brand_order <- data_subset %>%
+  group_by(make) %>%
+  summarise(avg_res = mean(mean_pct_residual)) %>%
+  arrange(desc(avg_res)) %>%
+  pull(make)
+
+data_subset <- data_subset %>%
+  mutate(make = factor(make, levels = brand_order))
+
+# Scaling for brand count line
+max_left <- max(abs(data_subset$mean_pct_residual), na.rm = TRUE)
+max_right <- max(data_subset$brand_count, na.rm = TRUE)
+scale_factor <- ifelse(max_right == 0, 1, max_left / max_right)
+
+# Plot with side-by-side bars
+p <- ggplot(data_subset, aes(x = make, fill = model)) +
+  geom_bar(aes(y = mean_pct_residual), stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+  geom_segment(
+    aes(x = make, xend = make,
+        y = 0, yend = pmax(0, brand_count * scale_factor)),  # Prevent negative brand counts
+    color = "black",
+    position = position_nudge(x = 0.001),
+    linewidth = 0.76
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  
+  scale_y_continuous(
+    name = "Mean Percentage Residual",
+    sec.axis = sec_axis(~ . / scale_factor, name = "Brand Count")
+  ) +
+  
+  labs(
+    title = "Luxury Level 3 - LASSO vs XGBoost Residuals by Brand",
+    x = "Brand",
+    fill = "Model"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    legend.position = "top"
+  )
+
+# Print the plot
+print(p)
+
+```
+
+
+
+
+
+
+
+
+
+```{r}
+# Define price bins
+price_bins <- c(0, 5000, 10000, 25000, 50000, 150000, 300000, Inf)
+price_labels <- c("0-5k", "5-10k", "10-25k", "25-50k", "50-150k", "150-300k", "300k+")
+
+# Calculate the mean residual by price bin for Lasso
+residual_summarylinear_pricebin <- holy_test_data %>%
+  mutate(price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) %>%
+  group_by(price_range) %>%
+  summarise(mean_residual = mean(pct_residual, na.rm = TRUE)) %>%
+  mutate(model = "Lasso")
+
+# Calculate the residuals as a percentage for XGBoost, with price bins
+comparisonsetnonlinear <- xgbdatatest2 %>%
+  mutate(predxgb = predxgb) %>%
+  mutate(residualxgbpct = (car_price - predxgb) / car_price * 100, 
+         price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) # Residual in percentage terms
+
+# Calculate the mean residual by price bin for XGBoost
+residual_summarynonlinear_pricebin <- comparisonsetnonlinear %>%
+  group_by(price_range) %>%
+  summarise(mean_residual = mean(residualxgbpct, na.rm = TRUE)) %>%
+  mutate(model = "XGBoost")
+
+# Combine the residual summaries into one data frame
+residual_summary_combined_pricebin <- bind_rows(residual_summarylinear_pricebin, residual_summarynonlinear_pricebin)
+
+# Create the bar plot for both Lasso and XGBoost residuals by price bin
+ggplot(residual_summary_combined_pricebin, aes(x = price_range, y = mean_residual, fill = model)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+  labs(title = "Mean Percentage Residuals by Price Bin (Lasso vs XGBoost)", 
+       x = "Price Range", 
+       y = "Mean Residual Percentage") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+```
+```{r}
+residual_summary_combined_pricebin <- residual_summary_combined_pricebin %>%
+  filter(price_range != "0-5k")
+
+# Create the bar plot for both Lasso and XGBoost residuals by price bin, excluding 0-5k
+ggplot(residual_summary_combined_pricebin, aes(x = price_range, y = mean_residual, fill = model)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+  labs(title = "Mean Percentage Residuals by Price Bin (Lasso vs XGBoost)", 
+       x = "Price Range", 
+       y = "Mean Residual Percentage") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+```
+```{r}
+# Lasso only
+residual_summarylinear_pricebin <- holy_test_data %>%
+  mutate(price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) %>%
+  group_by(price_range) %>%
+  summarise(mean_residual = mean(pct_residual, na.rm = TRUE)) %>%
+  mutate(model = "Lasso")
+
+# Exclude the "0-5k" price bin
+residual_summarylinear_pricebin <- residual_summarylinear_pricebin %>%
+  filter(price_range != "0-5k")
+
+# Lasso bar plot
+ggplot(residual_summarylinear_pricebin, aes(x = price_range, y = mean_residual, fill = model)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+  labs(title = "Mean Percentage Residuals by Price Bin (Lasso) without 0-5k", 
+       x = "Price Range", 
+       y = "Mean Residual Percentage") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+```
+
+
+```{r}
+# Lasso only
+residual_summarylinear_pricebin <- holy_test_data %>%
+  mutate(price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) %>%
+  group_by(price_range) %>%
+  summarise(mean_residual = mean(pct_residual, na.rm = TRUE),
+            count = n()) %>%
+  mutate(model = "Lasso")
+
+# Exclude the "0-5k" price bin
+residual_summarylinear_pricebin <- residual_summarylinear_pricebin %>%
+  filter(price_range != "0-5k")
+
+# Lasso bar plot with counts
+ggplot(residual_summarylinear_pricebin, aes(x = price_range, y = mean_residual, fill = model)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+  labs(title = "Mean Percentage Residuals by Price Bin (Lasso) without 0-5k", 
+       x = "Price Range", 
+       y = "Mean Residual Percentage") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_text(aes(label = count), vjust = -0.3, size = 3.5) +  # Add counts above bars
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+```
+
+```{r}
+# Lasso only
+residual_summarylinear_pricebin <- holy_test_data %>%
+  mutate(price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) %>%
+  group_by(price_range) %>%
+  summarise(mean_residual = mean(pct_residual, na.rm = TRUE),
+            count = n()) %>%
+  mutate(model = "Lasso")
+
+
+
+# Lasso bar plot with counts
+ggplot(residual_summarylinear_pricebin, aes(x = price_range, y = mean_residual, fill = model)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+  labs(title = "Mean Percentage Residuals by Price Bin (Lasso)", 
+       x = "Price Range", 
+       y = "Mean Residual Percentage") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_text(aes(label = count), vjust = -0.3, size = 3.5) +  # Add counts above bars
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+```
+
+
+
+```{r}
+# Filter for the "0-5k" price bin and calculate mean residual per brand
+residual_summarylinear_0_5k <- holy_test_data %>%
+  mutate(price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) %>%
+  filter(price_range == "0-5k") %>%
+  group_by(make) %>%
+  summarise(mean_residual = mean(pct_residual, na.rm = TRUE)) %>%
+  mutate(model = "Lasso")
+
+# Lasso bar plot for "0-5k" price bin, showing average residuals per car brand
+ggplot(residual_summarylinear_0_5k, aes(x = reorder(make, mean_residual), y = mean_residual, fill = model)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  labs(title = "Average Percentage Residuals for 0-5k Price Bin (Lasso)", 
+       x = "Car Brand", 
+       y = "Mean Residual Percentage") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+```
+```{r}
+# Filter for 0-5k price bin and calculate percentage residuals
+lasso_mileage_residuals <- holy_test_data %>%
+  mutate(price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) %>%
+  filter(price_range == "0-5k") %>%
+  mutate(residual_pct = (car_price - predicted_lasso) / car_price * 100)
+
+# Linear regression line plot with points for residuals vs. mileage for the 0-5k price bin
+ggplot(lasso_mileage_residuals, aes(x = miles, y = residual_pct)) +
+  geom_point(alpha = 0.5, color = "#0072B2") +  # Plot the points
+  geom_smooth(method = "loess", se = TRUE, color = "darkred", linewidth = 1.2) +  # Linear regression line
+  labs(title = "Residuals vs. Mileage for 0-5k Price Bin (Lasso)
+                (Fitted Using a Loess Function)",
+       x = "Mileage",
+       y = "Percentage Residual") +
+  scale_y_continuous(limits = c(NA, 2000)) +  # Limit the y-axis to 2000
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 9)
+  )
+
+
+```
+
+
+
+
+```{r}
+# XGBoost only
+comparisonsetnonlinear <- xgbdatatest2 %>%
+  mutate(predxgb = predxgb) %>%
+  mutate(residualxgbpct = (car_price - predxgb) / car_price * 100, 
+         price_range = cut(car_price, breaks = price_bins, labels = price_labels, right = FALSE)) 
+
+# Calculate the mean residual and count by price bin for XGBoost
+residual_summarynonlinear_pricebin <- comparisonsetnonlinear %>%
+  group_by(price_range) %>%
+  summarise(
+    mean_residual = mean(residualxgbpct, na.rm = TRUE),
+    count = n()
+  ) %>%
+  mutate(model = "XGBoost")
+
+# XGBoost bar plot with turquoise bars and counts
+ggplot(residual_summarynonlinear_pricebin, aes(x = price_range, y = mean_residual, fill = model)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+  geom_text(aes(label = count), vjust = -0.3, size = 3.5) +  # Add count labels
+  labs(title = "Mean Percentage Residuals by Price Bin (XGBoost)", 
+       x = "Price Range", 
+       y = "Mean Residual Percentage") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  theme_minimal() +
+  scale_fill_manual(values = c("XGBoost" = "#00CED1")) +  # Darker turquoise
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+
+```
+
+
+
+Constructing the final graph for comparison between Lasso and XGBoost
+
+
+```{r}
+
+car_counts <- holy_test_data %>%
+  group_by(luxury_level) %>%
+  summarise(car_count = n())
+
+residual_summary_combined <- residual_summary_combined %>%
+  left_join(car_counts, by = "luxury_level")
+
+
+```
+
+```{r}
+max_left <- max(abs(residual_summary_combined$mean_residual), na.rm = TRUE)
+max_right <- max(residual_summary_combined$car_count.x, na.rm = TRUE)
+scale_factor <- max_left / max_right
+
+```
+
+```{r}
+ggplot(residual_summary_combined, aes(x = as.factor(luxury_level), fill = model)) +
+  # Bar chart for mean residuals
+  geom_bar(aes(y = mean_residual), 
+           stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+  
+  # Vertical line (stem) from 0 to scaled car count
+  geom_segment(aes(x = as.factor(luxury_level), xend = as.factor(luxury_level),
+                   y = 0, yend = car_count.x * scale_factor),
+               color = "black", size = 1) +
+  
+
+  # Reference lines
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = 15, linetype = "dotted", color = "red", linewidth = 0.7) +
+  geom_hline(yintercept = -15, linetype = "dotted", color = "red", linewidth = 0.7) +
+
+  # Dual y-axis
+  scale_y_continuous(
+    name = "Mean Percentage Residual",
+    sec.axis = sec_axis(~ . / scale_factor, name = "Car Count (in Black)")
+  ) +
+
+  labs(
+    title = "Mean Residuals by Luxury Level (Lasso vs XGBoost) with Car Counts",
+    x = "Luxury Level",
+    fill = "Model"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(size = 9),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+```
+ 
